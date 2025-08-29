@@ -7,6 +7,8 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 
+from utils import compute_results
+
 from standard_rate_core import (
     DEFAULT_PARAMS,
     sanitize_params,
@@ -88,6 +90,16 @@ scenarios[current] = params
 st.session_state["scenarios"] = scenarios
 
 nodes, results = compute_rates(params)
+st.session_state["be_rate"] = results["break_even_rate"]
+st.session_state["req_rate"] = results["required_rate"]
+if "df_products_raw" in st.session_state:
+    st.session_state["df_products_raw"] = compute_results(
+        st.session_state["df_products_raw"], results["break_even_rate"], results["required_rate"]
+    )
+if "df_products_sim" in st.session_state:
+    st.session_state["df_products_sim"] = compute_results(
+        st.session_state["df_products_sim"], results["break_even_rate"], results["required_rate"]
+    )
 reverse_index = build_reverse_index(nodes)
 for k, ph in placeholders.items():
     affected = ", ".join(reverse_index.get(k, []))

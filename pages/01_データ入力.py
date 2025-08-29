@@ -49,6 +49,8 @@ for w in (warn1 + warn2):
 _, rate_res = compute_rates(sr_params)
 be_rate = rate_res["break_even_rate"]
 req_rate = rate_res["required_rate"]
+st.session_state["be_rate"] = be_rate
+st.session_state["req_rate"] = req_rate
 
 df_products = compute_results(df_products, be_rate, req_rate)
 
@@ -113,6 +115,8 @@ if st.sidebar.button("プレビュー更新"):
     df_new.loc[mask, "daily_qty"] *= (1 + qty_pct / 100.0)
     df_new["minutes_per_unit"] = df_new[PROCESS_COLS].sum(axis=1, skipna=True)
     _, rate_res = compute_rates(st.session_state["sr_params"])
+    st.session_state["be_rate"] = rate_res["break_even_rate"]
+    st.session_state["req_rate"] = rate_res["required_rate"]
     df_new = compute_results(df_new, rate_res["break_even_rate"], rate_res["required_rate"])
     st.session_state["df_products_sim"] = df_new
 elif st.sidebar.button("Baseに戻す"):
@@ -131,10 +135,18 @@ if st.sidebar.button("シナリオへ保存") and scenario_name:
 st.subheader("3) シミュレーション")
 st.caption("サイドバーで係数を調整し、プレビューを更新してください。")
 
-df_display = st.session_state.get("df_products_sim", st.session_state["df_products_raw"])
+df_base = st.session_state["df_products_raw"]
 _, rate_res = compute_rates(st.session_state["sr_params"])
 req_rate = rate_res["required_rate"]
 be_rate = rate_res["break_even_rate"]
+st.session_state["req_rate"] = req_rate
+st.session_state["be_rate"] = be_rate
+st.session_state["df_products_raw"] = compute_results(df_base, be_rate, req_rate)
+if "df_products_sim" in st.session_state:
+    st.session_state["df_products_sim"] = compute_results(
+        st.session_state["df_products_sim"], be_rate, req_rate
+    )
+df_display = st.session_state.get("df_products_sim", st.session_state["df_products_raw"])
 avg_vapm = df_display["va_per_min"].replace([np.inf, -np.inf], np.nan).dropna().mean()
 median_mpu = df_display["minutes_per_unit"].replace([np.inf, -np.inf], np.nan).dropna().median()
 col1, col2, col3, col4 = st.columns(4)
@@ -150,9 +162,12 @@ preview = df_display.head(50)
 def highlight_changes(data: pd.DataFrame) -> np.ndarray:
     b = base.reindex(data.index)[data.columns]
     diff = data.ne(b)
-    return np.where(diff, "background-color:#ffe0b2", "")
+    return np.where(diff, "background-color:#fff2cc", "")
 
-st.dataframe(preview.style.apply(highlight_changes, axis=None), use_container_width=True)
+styled = preview.style.apply(highlight_changes, axis=None).set_properties(
+    **{"background-color": "#f6f6f6"}
+)
+st.dataframe(styled, use_container_width=True)
 
 csv = df_display.to_csv(index=False).encode("utf-8-sig")
 st.download_button("CSVダウンロード", data=csv, file_name="products_sim.csv", mime="text/csv")

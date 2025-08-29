@@ -30,6 +30,8 @@ scenarios[scenario_name] = base_params
 _, base_results = compute_rates(base_params)
 be_rate = base_results["break_even_rate"]
 req_rate = base_results["required_rate"]
+st.session_state["be_rate"] = be_rate
+st.session_state["req_rate"] = req_rate
 for w in warn_list:
     st.warning(w)
 
@@ -43,6 +45,11 @@ with st.expander("表示設定", expanded=False):
     topn = int(st.slider("未達SKUの上位件数（テーブル/パレート）", min_value=5, max_value=50, value=20, step=1))
 
 df = compute_results(df_products_raw, be_rate, req_rate)
+st.session_state["df_products_raw"] = df
+if "df_products_sim" in st.session_state:
+    st.session_state["df_products_sim"] = compute_results(
+        st.session_state["df_products_sim"], be_rate, req_rate
+    )
 
 # Global filters
 fcol1, fcol2, fcol3 = st.columns([1,1,2])

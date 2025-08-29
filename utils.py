@@ -180,9 +180,19 @@ def parse_products(xls: pd.ExcelFile, sheet_name: str = "R6.12") -> Tuple[pd.Dat
         return pd.DataFrame(), warnings
 
     header_row = raw.iloc[hdr_row]
-    unit_row = raw.iloc[hdr_row + 1] if hdr_row + 1 < len(raw) else pd.Series(dtype=object)
+    # 単位行はヘッダ行の前後どちらかに存在する可能性がある
+    unit_row = pd.Series(dtype=object)
+    unit_row_idx = hdr_row + 1
+    if hdr_row - 1 >= 0:
+        candidate = raw.iloc[hdr_row - 1]
+        if candidate.dropna().astype(str).str.contains(r"[円個分％]").any():
+            unit_row = candidate
+            unit_row_idx = hdr_row - 1
+    if unit_row.empty and hdr_row + 1 < len(raw):
+        unit_row = raw.iloc[hdr_row + 1]
+        unit_row_idx = hdr_row + 1
     cols = build_columns_from_two_rows(header_row, unit_row)
-    data = raw.iloc[hdr_row + 2 :].reset_index(drop=True)
+    data = raw.iloc[unit_row_idx + 1 :].reset_index(drop=True)
     if len(cols) != data.shape[1]:
         data = data.iloc[:, : len(cols)]
     data.columns = [c.replace("\n", "") if isinstance(c, str) else c for c in cols]

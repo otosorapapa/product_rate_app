@@ -8,6 +8,7 @@ import streamlit as st
 import altair as alt
 
 from utils import compute_results
+from standard_rate_core import DEFAULT_PARAMS, sanitize_params, compute_rates
 
 st.title("② ダッシュボード")
 
@@ -16,8 +17,13 @@ if "df_products_raw" not in st.session_state or st.session_state["df_products_ra
     st.stop()
 
 df_products_raw = st.session_state["df_products_raw"]
-be_rate = st.session_state.get("be_rate", 0.0)
-req_rate = st.session_state.get("req_rate", 0.0)
+base_params = st.session_state.get("sr_params", DEFAULT_PARAMS)
+base_params, warn_list = sanitize_params(base_params)
+_, base_results = compute_rates(base_params)
+be_rate = base_results["break_even_rate"]
+req_rate = base_results["required_rate"]
+for w in warn_list:
+    st.warning(w)
 
 # Controls
 with st.expander("基準賃率の調整（What-if）", expanded=False):

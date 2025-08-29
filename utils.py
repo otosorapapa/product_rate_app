@@ -52,92 +52,84 @@ def read_excel_safely(path_or_bytes) -> Optional[pd.ExcelFile]:
     except Exception:
         return None
 
-def parse_hyochin(xls: pd.ExcelFile) -> Tuple[Dict[str, Any], List[str]]:
-    """『標賃』シートから主要パラメータを抽出"""
+def parse_hyochin(xls: pd.ExcelFile) -> Tuple[Dict[str, float], Dict[str, float], List[str]]:
+    """『標賃』シートから諸元を抽出し、賃率を再計算"""
+    from standard_rate_core import DEFAULT_PARAMS, sanitize_params, compute_rates
+
     warnings: List[str] = []
-    params: Dict[str, Any] = dict(
-        labor_cost=None, sgna=None, fixed_total=None,
-        required_profit_total=None, annual_minutes=None,
-        break_even_rate=None, required_rate=None
-    )
     try:
         df = pd.read_excel(xls, sheet_name="標賃", header=None)
     except Exception as e:
         warnings.append(f"シート『標賃』が読めません: {e}")
-        return params, warnings
+        return {}, DEFAULT_PARAMS.copy(), warnings
 
-    def get_by_label(label:str):
-        rows = df[(df.iloc[:,1].astype(str).str.contains(label, na=False))]
+    def find_value(col1_kw: str | None = None, col2_kw: str | None = None) -> Optional[float]:
+        mask = pd.Series(True, index=df.index)
+        if col1_kw:
+            mask &= df.iloc[:, 1].astype(str).str.contains(col1_kw, na=False)
+        if col2_kw:
+            mask &= df.iloc[:, 2].astype(str).str.contains(col2_kw, na=False)
+        rows = df[mask]
         if rows.empty:
             return None
         row = rows.iloc[0]
-        val = None
         for x in row[::-1]:
             try:
-                xv = float(x)
-                val = xv
-                break
+                return float(x)
             except Exception:
                 continue
-        return val
+        return None
 
-    labor = get_by_label("労務費")
-    sgna = get_by_label("販管費")
-    fixed_total = get_by_label("計")  # ➀必要固定費の計（最初の計を想定）
+    extracted = {
+        "labor_cost": find_value("労務費"),
+        "sga_cost": find_value("販管費"),
+        "loan_repayment": find_value("借入返済"),
+        "tax_payment": find_value("納税"),
+        "future_business": find_value("未来事業費"),
+        "fulltime_workers": find_value("直接工員数", "正社員"),
+        "part1_workers": find_value(col2_kw="準社員➀"),
+        "part2_workers": find_value(col2_kw="準社員②"),
+        "working_days": find_value("年間稼働日数"),
+        "daily_hours": find_value("1日当り稼働時間"),
+        "operation_rate": find_value("1日当り操業度"),
+    }
 
-    required_profit_total = None
-    idx_required_block = df.index[df.iloc[:,1].astype(str).str.contains("②必要利益", na=False)]
-    if len(idx_required_block)>0:
-        start = idx_required_block[0]
-        for i in range(start, min(start+10, len(df))):
-            if "計" in str(df.iloc[i,1]):
+    # part2 coefficient (row after 準社員②)
+    part2_coef = None
+    rows = df[df.iloc[:, 2].astype(str).str.contains("準社員②", na=False)]
+    if not rows.empty:
+        idx = rows.index[0]
+        for i in range(idx + 1, min(idx + 4, len(df))):
+            if "労働係数" in str(df.iloc[i, 2]):
                 try:
-                    required_profit_total = float(df.iloc[i,3])
-                    break
+                    part2_coef = float(df.iloc[i, 3])
                 except Exception:
                     pass
+                break
+    extracted["part2_coefficient"] = part2_coef
 
-    annual_minutes = None
-    rows = df[(df.iloc[:,1].astype(str).str.contains("年間標準稼働時間（分）", na=False))]
-    if not rows.empty:
-        try:
-            annual_minutes = float(rows.iloc[0,3])
-        except Exception:
-            annual_minutes = None
+    sr_params: Dict[str, float] = {}
+    for k, default in DEFAULT_PARAMS.items():
+        v = extracted.get(k)
+        if v is None:
+            warnings.append(f"{k} をExcelから取得できませんでした。既定値を使用します。")
+            sr_params[k] = default
+        else:
+            sr_params[k] = v
 
-    be_rate = None; req_rate = None
-    rows_be = df[(df.iloc[:,1].astype(str).str.contains("損益分岐賃率", na=False))]
-    if not rows_be.empty:
-        try:
-            be_rate = float(rows_be.iloc[0,3])
-        except Exception:
-            pass
-    rows_req = df[(df.iloc[:,1].astype(str).str.contains("必要賃率", na=False))]
-    if not rows_req.empty:
-        try:
-            req_rate = float(rows_req.iloc[0,3])
-        except Exception:
-            pass
-
-    if (be_rate is None or req_rate is None) and fixed_total and annual_minutes:
-        try:
-            if be_rate is None:
-                be_rate = fixed_total / annual_minutes
-            if req_rate is None and required_profit_total:
-                req_rate = (fixed_total + required_profit_total) / annual_minutes
-        except Exception:
-            pass
-
-    params.update(dict(
-        labor_cost=labor,
-        sgna=sgna,
-        fixed_total=fixed_total,
-        required_profit_total=required_profit_total,
-        annual_minutes=annual_minutes,
-        break_even_rate=be_rate,
-        required_rate=req_rate,
-    ))
-    return params, warnings
+    sr_params, warn2 = sanitize_params(sr_params)
+    warnings.extend(warn2)
+    _, flat = compute_rates(sr_params)
+    params = {k: flat[k] for k in [
+        "fixed_total",
+        "required_profit_total",
+        "annual_minutes",
+        "break_even_rate",
+        "required_rate",
+        "daily_be_va",
+        "daily_req_va",
+    ]}
+    return params, sr_params, warnings
 
 def parse_products(xls: pd.ExcelFile, sheet_name: str="R6.12") -> Tuple[pd.DataFrame, List[str]]:
     """『R6.12』の製品マスタを構造化"""

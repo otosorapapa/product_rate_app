@@ -18,7 +18,10 @@ if "df_products_raw" not in st.session_state or st.session_state["df_products_ra
     st.info("先に『① データ入力 & 取り込み』でデータを準備してください。")
     st.stop()
 
-df_products_raw = st.session_state["df_products_raw"]
+product_scenarios = st.session_state.get("product_scenarios", {})
+base_df = st.session_state.get("df_products_raw")
+sim_df = st.session_state.get("df_products_sim")
+df_products_raw = product_scenarios.get(scenario_name, sim_df if sim_df is not None else base_df)
 scenarios = st.session_state.get("scenarios", {scenario_name: st.session_state.get("sr_params", DEFAULT_PARAMS)})
 st.session_state["scenarios"] = scenarios
 base_params = scenarios.get(scenario_name, st.session_state.get("sr_params", DEFAULT_PARAMS))

@@ -289,26 +289,61 @@ colD.metric("平均1分当り付加価値", f"{avg_vapm:,.1f}")
 
 st.subheader("SKU別 計算結果")
 
-def _style_row(row):
-    color = "#d1ffd6" if row.get("meets_required_rate") else "#ffd1d1"
-    return [f"background-color: {color}"] * len(row)
 
-styled = df_results.style.apply(_style_row, axis=1).format({
-    "actual_unit_price": "{:,.0f}",
-    "material_unit_cost": "{:,.0f}",
-    "minutes_per_unit": "{:,.3f}",
-    "daily_qty": "{:,.0f}",
-    "daily_total_minutes": "{:,.1f}",
-    "gp_per_unit": "{:,.0f}",
-    "daily_va": "{:,.0f}",
-    "va_per_min": "{:,.3f}",
-    "be_va_unit_price": "{:,.2f}",
-    "req_va_unit_price": "{:,.2f}",
-    "required_selling_price": "{:,.2f}",
-    "price_gap_vs_required": "{:,.2f}",
-    "rate_gap_vs_required": "{:,.3f}"
-})
-st.dataframe(styled, use_container_width=True)
+def _style_rate_gap(val: float) -> str:
+    """Highlight rate_gap_vs_required with subtle colors."""
+    if pd.isna(val):
+        return ""
+    return "background-color: #e6ffe6" if val >= 0 else "background-color: #ffe6e6"
+
+
+styled = (
+    df_results.style
+    .map(_style_rate_gap, subset=["rate_gap_vs_required"])
+    .format({
+        "actual_unit_price": "{:,.0f}",
+        "material_unit_cost": "{:,.0f}",
+        "minutes_per_unit": "{:,.3f}",
+        "daily_qty": "{:,.0f}",
+        "daily_total_minutes": "{:,.1f}",
+        "gp_per_unit": "{:,.0f}",
+        "daily_va": "{:,.0f}",
+        "va_per_min": "{:,.3f}",
+        "be_va_unit_price": "{:,.2f}",
+        "req_va_unit_price": "{:,.2f}",
+        "required_selling_price": "{:,.2f}",
+        "price_gap_vs_required": "{:,.2f}",
+        "rate_gap_vs_required": "{:,.3f}",
+    })
+)
+
+column_config = {
+    "product_no": st.column_config.TextColumn("品番"),
+    "product_name": st.column_config.TextColumn("製品名"),
+    "actual_unit_price": st.column_config.NumberColumn("実際売単価", format="%d"),
+    "material_unit_cost": st.column_config.NumberColumn("材料費単価", format="%d"),
+    "minutes_per_unit": st.column_config.NumberColumn("分/個", format="%.3f"),
+    "daily_qty": st.column_config.NumberColumn("日産数", format="%d"),
+    "daily_total_minutes": st.column_config.NumberColumn("日産合計分", format="%.1f"),
+    "gp_per_unit": st.column_config.NumberColumn("粗利/個", format="%d"),
+    "daily_va": st.column_config.NumberColumn("日産付加価値", format="%d"),
+    "va_per_min": st.column_config.NumberColumn("1分当りVA", format="%.3f"),
+    "be_va_unit_price": st.column_config.NumberColumn("損益分岐VA単価", format="%.2f"),
+    "req_va_unit_price": st.column_config.NumberColumn("必要VA単価", format="%.2f"),
+    "required_selling_price": st.column_config.NumberColumn("必要販売単価", format="%.2f"),
+    "price_gap_vs_required": st.column_config.NumberColumn("必要単価差額", format="%.2f"),
+    "rate_gap_vs_required": st.column_config.NumberColumn(
+        "賃率乖離", format="%.3f", help="正の値は必要賃率を達成しています"
+    ),
+    "meets_required_rate": st.column_config.CheckboxColumn("達成"),
+}
+
+st.dataframe(
+    styled,
+    use_container_width=True,
+    hide_index=True,
+    column_config=column_config,
+)
 
 csv = df_results.to_csv(index=False).encode("utf-8-sig")
 st.download_button("結果をCSVでダウンロード", data=csv, file_name="calc_results.csv", mime="text/csv")

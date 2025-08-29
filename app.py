@@ -293,7 +293,7 @@ df_results = compute_results(df_products_raw, be_rate, req_rate)
 st.sidebar.header("分類フィルタ")
 class_options = df_results["rate_class"].unique().tolist()
 selected_classes = st.sidebar.multiselect("達成分類で絞り込み", class_options, default=class_options)
-df_display = df_results[df_results["rate_class"].isin(selected_classes)]
+df_display = df_results[df_results["rate_class"].isin(selected_classes)].sort_values("rate_gap_vs_required")
 
 colA, colB, colC, colD = st.columns(4)
 colA.metric("必要賃率 (円/分)", f"{req_rate:,.3f}")
@@ -308,29 +308,66 @@ class_counts = df_display["rate_class"].value_counts()
 st.bar_chart(class_counts)
 
 st.subheader("SKU別 計算結果")
+rename_map = {
+    "product_no": "製品番号",
+    "product_name": "製品名",
+    "actual_unit_price": "実際売単価",
+    "material_unit_cost": "材料原価",
+    "minutes_per_unit": "分/個",
+    "daily_qty": "日産数",
+    "daily_total_minutes": "日産合計(分)",
+    "gp_per_unit": "粗利/個",
+    "daily_va": "付加価値(日産)",
+    "va_per_min": "付加価値/分",
+    "be_va_unit_price": "損益分岐付加価値単価",
+    "req_va_unit_price": "必要付加価値単価",
+    "required_selling_price": "必要販売単価",
+    "price_gap_vs_required": "必要販売単価差額",
+    "rate_gap_vs_required": "必要賃率差",
+    "meets_required_rate": "必要賃率達成",
+    "rate_class": "達成分類",
+}
+ordered_cols = [
+    "製品番号","製品名","実際売単価","必要販売単価","必要販売単価差額","材料原価","粗利/個",
+    "分/個","日産数","日産合計(分)","付加価値(日産)","付加価値/分",
+    "損益分岐付加価値単価","必要付加価値単価","必要賃率差","必要賃率達成","達成分類",
+]
+df_table = df_display.rename(columns=rename_map)
+df_table = df_table[[c for c in ordered_cols if c in df_table.columns]]
 
 def _style_row(row):
-    color = "#d1ffd6" if row.get("meets_required_rate") else "#ffd1d1"
+    color = "#d1ffd6" if row.get("必要賃率達成") else "#ffd1d1"
     return [f"background-color: {color}"] * len(row)
 
-styled = df_display.style.apply(_style_row, axis=1).format({
-    "actual_unit_price": "{:,.0f}",
-    "material_unit_cost": "{:,.0f}",
-    "minutes_per_unit": "{:,.3f}",
-    "daily_qty": "{:,.0f}",
-    "daily_total_minutes": "{:,.1f}",
-    "gp_per_unit": "{:,.0f}",
-    "daily_va": "{:,.0f}",
-    "va_per_min": "{:,.3f}",
-    "be_va_unit_price": "{:,.2f}",
-    "req_va_unit_price": "{:,.2f}",
-    "required_selling_price": "{:,.2f}",
-    "price_gap_vs_required": "{:,.2f}",
-    "rate_gap_vs_required": "{:,.3f}"
-})
-st.dataframe(styled, use_container_width=True)
+def _highlight_negative(v):
+    try:
+        return "color: red" if v < 0 else ""
+    except:
+        return ""
 
-csv = df_display.to_csv(index=False).encode("utf-8-sig")
+styled = (
+    df_table.style
+    .apply(_style_row, axis=1)
+    .applymap(_highlight_negative, subset=["必要販売単価差額","必要賃率差"])
+    .format({
+        "実際売単価": "{:,.0f}",
+        "材料原価": "{:,.0f}",
+        "分/個": "{:,.3f}",
+        "日産数": "{:,.0f}",
+        "日産合計(分)": "{:,.1f}",
+        "粗利/個": "{:,.0f}",
+        "付加価値(日産)": "{:,.0f}",
+        "付加価値/分": "{:,.3f}",
+        "損益分岐付加価値単価": "{:,.2f}",
+        "必要付加価値単価": "{:,.2f}",
+        "必要販売単価": "{:,.2f}",
+        "必要販売単価差額": "{:,.2f}",
+        "必要賃率差": "{:,.3f}",
+    })
+)
+st.dataframe(styled, use_container_width=True, height=600)
+
+csv = df_table.to_csv(index=False).encode("utf-8-sig")
 st.download_button("結果をCSVでダウンロード", data=csv, file_name="calc_results.csv", mime="text/csv")
 
 st.subheader("個別SKUの詳細（原データ）")

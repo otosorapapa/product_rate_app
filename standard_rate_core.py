@@ -60,14 +60,14 @@ class FormulaSpec:
 FORMULAS: Dict[str, FormulaSpec] = {
     "fixed_total": FormulaSpec(
         label="固定費計",
-        formula="labor_cost + sga_cost",
+        formula="labor_cost + sga_cost",  # PDF: D5 = 労務費 + 販管費
         depends_on=["labor_cost", "sga_cost"],
         unit="円/年",
         func=lambda n, p: p["labor_cost"] + p["sga_cost"],
     ),
     "required_profit_total": FormulaSpec(
         label="必要利益計",
-        formula="loan_repayment + tax_payment + future_business",
+        formula="loan_repayment + tax_payment + future_business",  # PDF: D15 = 借入返済 + 納税・納付 + 未来事業費
         depends_on=["loan_repayment", "tax_payment", "future_business"],
         unit="円/年",
         func=lambda n, p: p["loan_repayment"] + p["tax_payment"] + p["future_business"],
@@ -95,35 +95,35 @@ FORMULAS: Dict[str, FormulaSpec] = {
     ),
     "annual_minutes": FormulaSpec(
         label="年間標準稼働分",
-        formula="net_workers*working_days*standard_daily_minutes",
+        formula="net_workers*working_days*standard_daily_minutes",  # PDF: D33 = 正味直接工員数 * 年間稼働日数 * 1日標準稼働分
         depends_on=["net_workers", "working_days", "standard_daily_minutes"],
         unit="分/年",
         func=lambda n, p: n["net_workers"]["value"] * p["working_days"] * n["standard_daily_minutes"]["value"],
     ),
     "break_even_rate": FormulaSpec(
         label="損益分岐賃率",
-        formula="fixed_total/annual_minutes",
+        formula="fixed_total/annual_minutes",  # PDF: 損益分岐賃率 = D5/D33
         depends_on=["fixed_total", "annual_minutes"],
         unit="円/分",
         func=lambda n, p: n["fixed_total"]["value"] / n["annual_minutes"]["value"],
     ),
     "required_rate": FormulaSpec(
         label="必要賃率",
-        formula="(fixed_total + required_profit_total)/annual_minutes",
+        formula="(fixed_total + required_profit_total)/annual_minutes",  # PDF: 必要賃率 = D15/D33
         depends_on=["fixed_total", "required_profit_total", "annual_minutes"],
         unit="円/分",
         func=lambda n, p: (n["fixed_total"]["value"] + n["required_profit_total"]["value"])/ n["annual_minutes"]["value"],
     ),
     "daily_be_va": FormulaSpec(
         label="1日当り損益分岐付加価値",
-        formula="固定費計/稼働日数",
+        formula="固定費計/稼働日数",  # PDF: =D5/D28
         depends_on=["fixed_total", "working_days"],
         unit="円/日",
         func=lambda n, p: n["fixed_total"]["value"] / p["working_days"],
     ),
     "daily_req_va": FormulaSpec(
         label="1日当り必要利益付加価値",
-        formula="(固定費計 + 必要利益計)/稼働日数",
+        formula="(固定費計 + 必要利益計)/稼働日数",  # PDF: =D15/D28
         depends_on=["fixed_total", "required_profit_total", "working_days"],
         unit="円/日",
         func=lambda n, p: (n["fixed_total"]["value"] + n["required_profit_total"]["value"])/ p["working_days"],

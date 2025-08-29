@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
 from typing import Dict, List, Any
 
 st.set_page_config(page_title="製品賃率計算アプリ", layout="wide")
@@ -270,57 +271,77 @@ def compute_results(df_products: pd.DataFrame, break_even_rate: float, required_
     out_cols = [c for c in out_cols if c in df.columns]
     return df[out_cols]
 
-# ============== UI ==============
+ # ============== UI ==============
 st.title("製品賃率計算（分/個 × 賃率）管理アプリ")
 
-st.sidebar.header("データソース")
-default_path = "data/sample.xlsx"
-file = st.sidebar.file_uploader("Excelをアップロード（未指定ならサンプルを使用）", type=["xlsx"])
-if file is None:
-    st.sidebar.info("サンプルデータを使用します。")
-    xls = read_excel_safely(default_path)
-else:
-    xls = read_excel_safely(file)
-if xls is None:
+page = st.radio("ページ選択", ["製品情報入力", "計算結果"], horizontal=True)
+
+if page == "製品情報入力":
+    st.header("データソース")
+    default_path = "data/sample.xlsx"
+    file = st.file_uploader("Excelをアップロード（未指定ならサンプルを使用）", type=["xlsx"])
+    if file is None:
+        st.info("サンプルデータを使用します。")
+        xls = read_excel_safely(default_path)
+    else:
+        xls = read_excel_safely(file)
+    if xls is None:
+        st.stop()
+
+    params = parse_hyochin(xls)
+    df_products_raw = parse_products(xls, sheet_name="R6.12")
+
+    st.header("製品情報の追加")
+    if "extra_products" not in st.session_state:
+        st.session_state.extra_products = []
+    with st.form("add_product", clear_on_submit=True):
+        st.write("製品情報を手入力で追加")
+        p_no = st.text_input("製品番号")
+        p_name = st.text_input("製品名")
+        p_price = st.number_input("実際売単価", value=0.0)
+        p_cost = st.number_input("材料原価", value=0.0)
+        p_mpu = st.number_input("分/個", value=0.0)
+        p_qty = st.number_input("日産数", value=0.0)
+        submitted = st.form_submit_button("追加")
+    if submitted:
+        st.session_state.extra_products.append({
+            "product_no": p_no,
+            "product_name": p_name,
+            "actual_unit_price": p_price,
+            "material_unit_cost": p_cost,
+            "minutes_per_unit": p_mpu,
+            "daily_qty": p_qty,
+        })
+    if st.session_state.extra_products:
+        df_manual = pd.DataFrame(st.session_state.extra_products)
+        df_manual["gp_per_unit"] = df_manual["actual_unit_price"] - df_manual["material_unit_cost"]
+        df_manual["daily_total_minutes"] = df_manual["minutes_per_unit"] * df_manual["daily_qty"]
+        df_manual["daily_va"] = df_manual["gp_per_unit"] * df_manual["daily_qty"]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            df_manual["va_per_min"] = df_manual["daily_va"] / df_manual["daily_total_minutes"]
+        df_products_raw = pd.concat([df_products_raw, df_manual], ignore_index=True)
+
+    st.header("標準賃率（標賃）")
+    be_rate = st.number_input("損益分岐賃率（円/分）", value=float(params.get("break_even_rate") or 0.0), step=0.001, format="%.6f")
+    req_rate = st.number_input("必要賃率（円/分）", value=float(params.get("required_rate") or 0.0), step=0.001, format="%.6f")
+
+    st.session_state.params = params
+    st.session_state.df_products_raw = df_products_raw
+    st.session_state.be_rate = be_rate
+    st.session_state.req_rate = req_rate
+    st.success("入力内容を保存しました。上の『ページ選択』から『計算結果』を表示できます。")
     st.stop()
 
-params = parse_hyochin(xls)
-df_products_raw = parse_products(xls, sheet_name="R6.12")
+if "df_products_raw" not in st.session_state or st.session_state.df_products_raw.empty:
+    st.warning("先に『製品情報入力』ページでデータを入力してください。")
+    st.stop()
 
-# Manual product entry
-st.sidebar.header("製品情報の追加")
-if "extra_products" not in st.session_state:
-    st.session_state.extra_products = []
-with st.sidebar.form("add_product", clear_on_submit=True):
-    st.write("製品情報を手入力で追加")
-    p_no = st.text_input("製品番号")
-    p_name = st.text_input("製品名")
-    p_price = st.number_input("実際売単価", value=0.0)
-    p_cost = st.number_input("材料原価", value=0.0)
-    p_mpu = st.number_input("分/個", value=0.0)
-    p_qty = st.number_input("日産数", value=0.0)
-    submitted = st.form_submit_button("追加")
-if submitted:
-    st.session_state.extra_products.append({
-        "product_no": p_no,
-        "product_name": p_name,
-        "actual_unit_price": p_price,
-        "material_unit_cost": p_cost,
-        "minutes_per_unit": p_mpu,
-        "daily_qty": p_qty,
-    })
-if st.session_state.extra_products:
-    df_manual = pd.DataFrame(st.session_state.extra_products)
-    df_manual["gp_per_unit"] = df_manual["actual_unit_price"] - df_manual["material_unit_cost"]
-    df_manual["daily_total_minutes"] = df_manual["minutes_per_unit"] * df_manual["daily_qty"]
-    df_manual["daily_va"] = df_manual["gp_per_unit"] * df_manual["daily_qty"]
-    with np.errstate(divide='ignore', invalid='ignore'):
-        df_manual["va_per_min"] = df_manual["daily_va"] / df_manual["daily_total_minutes"]
-    df_products_raw = pd.concat([df_products_raw, df_manual], ignore_index=True)
+params = st.session_state.get("params", {})
+df_products_raw = st.session_state.df_products_raw
+be_rate = st.session_state.get("be_rate", 0.0)
+req_rate = st.session_state.get("req_rate", 0.0)
 
-st.sidebar.header("標準賃率（標賃）")
-be_rate = st.sidebar.number_input("損益分岐賃率（円/分）", value=float(params.get("break_even_rate") or 0.0), step=0.001, format="%.6f")
-req_rate = st.sidebar.number_input("必要賃率（円/分）", value=float(params.get("required_rate") or 0.0), step=0.001, format="%.6f")
+df_results = compute_results(df_products_raw, be_rate, req_rate)
 
 with st.expander("賃率の根拠（参考）", expanded=False):
     c1, c2, c3 = st.columns(3)
@@ -328,15 +349,9 @@ with st.expander("賃率の根拠（参考）", expanded=False):
     c2.metric("必要利益（計）", f"{params.get('required_profit_total'):,}" if params.get('required_profit_total') else "-")
     c3.metric("年間標準稼働時間（分）", f"{params.get('annual_minutes'):,}" if params.get('annual_minutes') else "-")
 
-if df_products_raw.empty:
-    st.warning("製品データが見つかりません。")
-    st.stop()
-
-df_results = compute_results(df_products_raw, be_rate, req_rate)
-
-st.sidebar.header("分類フィルタ")
+st.subheader("分類フィルタ")
 class_options = df_results["rate_class"].unique().tolist()
-selected_classes = st.sidebar.multiselect("達成分類で絞り込み", class_options, default=class_options)
+selected_classes = st.multiselect("達成分類で絞り込み", class_options, default=class_options)
 df_display = df_results[df_results["rate_class"].isin(selected_classes)].sort_values("rate_gap_vs_required")
 
 colA, colB, colC, colD = st.columns(4)
@@ -348,8 +363,14 @@ avg_vapm = df_display["va_per_min"].replace([np.inf,-np.inf], np.nan).dropna().m
 colD.metric("平均1分当り付加価値", f"{avg_vapm:,.1f}")
 
 st.subheader("達成状況の分析")
-class_counts = df_display["rate_class"].value_counts()
-st.bar_chart(class_counts)
+class_counts = df_display["rate_class"].value_counts().reset_index()
+class_counts.columns = ["rate_class", "count"]
+chart = alt.Chart(class_counts).mark_bar(color="#4e79a7").encode(
+    x=alt.X("rate_class:N", title="達成分類"),
+    y=alt.Y("count:Q", title="件数"),
+    tooltip=["rate_class", "count"],
+).properties(height=400)
+st.altair_chart(chart, use_container_width=True)
 
 st.subheader("SKU別 計算結果")
 rename_map = {

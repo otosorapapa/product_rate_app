@@ -12,7 +12,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Tuple, TypedDict
+from typing import Callable, Dict, Iterable, List, Tuple, TypedDict, Set
 
 import numpy as np
 import pandas as pd
@@ -319,6 +319,30 @@ def compute_rates(params: Params) -> Tuple[Dict[str, Node], Results]:
 
     flat: Results = Results({k: v["value"] for k, v in nodes.items()})
     return nodes, flat
+
+
+def build_reverse_index(nodes: Dict[str, Node]) -> Dict[str, List[str]]:
+    """依存関係の逆引きを作成（推移閉包を含む）"""
+
+    dep_map: Dict[str, Set[str]] = {
+        key: set(node["depends_on"]) for key, node in nodes.items()
+    }
+    changed = True
+    while changed:
+        changed = False
+        for key, deps in dep_map.items():
+            extra: Set[str] = set()
+            for d in list(deps):
+                extra |= dep_map.get(d, set())
+            if not extra.issubset(deps):
+                deps |= extra
+                changed = True
+
+    reverse: Dict[str, List[str]] = defaultdict(list)
+    for node_key, deps in dep_map.items():
+        for dep in deps:
+            reverse[dep].append(node_key)
+    return reverse
 
 def sensitivity_series(params: Params, key: str, grid: Iterable[float]) -> pd.Series:
     """指定パラメータを変化させたときの必要賃率を計算"""
@@ -644,10 +668,7 @@ def main() -> None:
         )
         st.sidebar.dataframe(diff_df)
 
-    reverse_index: Dict[str, List[str]] = defaultdict(list)
-    for node in nodes.values():
-        for dep in node["depends_on"]:
-            reverse_index[dep].append(node["key"])
+    reverse_index = build_reverse_index(nodes)
 
     for k, ph in placeholders.items():
         affected = ", ".join(reverse_index.get(k, []))

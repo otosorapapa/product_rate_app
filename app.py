@@ -44,6 +44,16 @@ def series_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
         return pd.to_numeric(df[col], errors="coerce")
     return pd.Series(np.nan, index=df.index, dtype="float64")
 
+def classify_rate_gap(gap: float) -> str:
+    """分類用に賃率差を評価する"""
+    if pd.isna(gap):
+        return "不明"
+    if gap >= 1.0:
+        return "余裕あり"
+    if gap >= 0:
+        return "達成"
+    return "未達"
+
 # ============== Parsing 標賃 ==============
 def parse_hyochin(xls: pd.ExcelFile) -> Dict[str, Any]:
     try:
@@ -235,13 +245,14 @@ def compute_results(df_products: pd.DataFrame, break_even_rate: float, required_
     df["price_gap_vs_required"] = df.get("actual_unit_price") - df["required_selling_price"]
     df["rate_gap_vs_required"] = df.get("va_per_min") - req_rate
     df["meets_required_rate"] = df["rate_gap_vs_required"] >= 0
+    df["rate_class"] = df["rate_gap_vs_required"].apply(classify_rate_gap)
     out_cols = [
         "product_no","product_name",
         "actual_unit_price","material_unit_cost",
         "minutes_per_unit","daily_qty","daily_total_minutes",
         "gp_per_unit","daily_va","va_per_min",
         "be_va_unit_price","req_va_unit_price","required_selling_price",
-        "price_gap_vs_required","rate_gap_vs_required","meets_required_rate"
+        "price_gap_vs_required","rate_gap_vs_required","meets_required_rate","rate_class"
     ]
     out_cols = [c for c in out_cols if c in df.columns]
     return df[out_cols]
@@ -279,13 +290,22 @@ if df_products_raw.empty:
 
 df_results = compute_results(df_products_raw, be_rate, req_rate)
 
+st.sidebar.header("分類フィルタ")
+class_options = df_results["rate_class"].unique().tolist()
+selected_classes = st.sidebar.multiselect("達成分類で絞り込み", class_options, default=class_options)
+df_display = df_results[df_results["rate_class"].isin(selected_classes)]
+
 colA, colB, colC, colD = st.columns(4)
 colA.metric("必要賃率 (円/分)", f"{req_rate:,.3f}")
 colB.metric("損益分岐賃率 (円/分)", f"{be_rate:,.3f}")
-ach_rate = (df_results["meets_required_rate"].mean()*100.0) if len(df_results)>0 else 0.0
+ach_rate = (df_display["meets_required_rate"].mean()*100.0) if len(df_display)>0 else 0.0
 colC.metric("必要賃率達成SKU比率", f"{ach_rate:,.1f}%")
-avg_vapm = df_results["va_per_min"].replace([np.inf,-np.inf], np.nan).dropna().mean() if "va_per_min" in df_results else 0.0
+avg_vapm = df_display["va_per_min"].replace([np.inf,-np.inf], np.nan).dropna().mean() if "va_per_min" in df_display else 0.0
 colD.metric("平均1分当り付加価値", f"{avg_vapm:,.1f}")
+
+st.subheader("達成状況の分析")
+class_counts = df_display["rate_class"].value_counts()
+st.bar_chart(class_counts)
 
 st.subheader("SKU別 計算結果")
 
@@ -293,7 +313,7 @@ def _style_row(row):
     color = "#d1ffd6" if row.get("meets_required_rate") else "#ffd1d1"
     return [f"background-color: {color}"] * len(row)
 
-styled = df_results.style.apply(_style_row, axis=1).format({
+styled = df_display.style.apply(_style_row, axis=1).format({
     "actual_unit_price": "{:,.0f}",
     "material_unit_cost": "{:,.0f}",
     "minutes_per_unit": "{:,.3f}",
@@ -310,7 +330,7 @@ styled = df_results.style.apply(_style_row, axis=1).format({
 })
 st.dataframe(styled, use_container_width=True)
 
-csv = df_results.to_csv(index=False).encode("utf-8-sig")
+csv = df_display.to_csv(index=False).encode("utf-8-sig")
 st.download_button("結果をCSVでダウンロード", data=csv, file_name="calc_results.csv", mime="text/csv")
 
 st.subheader("個別SKUの詳細（原データ）")

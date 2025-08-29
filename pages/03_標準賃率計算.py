@@ -19,8 +19,8 @@ from standard_rate_core import (
 )
 
 st.title("③ 標準賃率 計算/感度分析")
-scenarios = st.session_state.setdefault("scenarios", {"Base": st.session_state.get("sr_params", DEFAULT_PARAMS)})
-current = st.session_state.setdefault("current_scenario", "Base")
+scenarios = st.session_state.setdefault("scenarios", {"基本": st.session_state.get("sr_params", DEFAULT_PARAMS)})
+current = st.session_state.setdefault("current_scenario", "基本")
 st.caption(f"適用中シナリオ: {current}")
 
 params = scenarios.get(current, st.session_state.get("sr_params", DEFAULT_PARAMS)).copy()
@@ -40,10 +40,10 @@ if st.sidebar.button("追加") and new_name:
     st.session_state["sr_params"] = params.copy()
     st.experimental_rerun()
 
-if current != "Base" and st.sidebar.button("削除"):
+if current != "基本" and st.sidebar.button("削除"):
     del scenarios[current]
-    st.session_state["current_scenario"] = "Base"
-    st.session_state["sr_params"] = scenarios["Base"].copy()
+    st.session_state["current_scenario"] = "基本"
+    st.session_state["sr_params"] = scenarios["基本"].copy()
     st.experimental_rerun()
 
 st.sidebar.header("入力")

@@ -289,7 +289,7 @@ def main() -> None:
 
     if "sr_params" not in st.session_state:
         loaded = streamlit_js_eval(
-            "window.localStorage.getItem('standard_rate_params')",
+            js_expressions="window.localStorage.getItem('standard_rate_params')",
             key="load_params",
         )
         if loaded:
@@ -413,7 +413,7 @@ def main() -> None:
         st.sidebar.warning(w)
     st.session_state.sr_params = params
     streamlit_js_eval(
-        f"window.localStorage.setItem('standard_rate_params', `{json.dumps(params, ensure_ascii=False)}`)",
+        js_expressions=f"window.localStorage.setItem('standard_rate_params', `{json.dumps(params, ensure_ascii=False)}`)",
         key="save_params",
     )
 

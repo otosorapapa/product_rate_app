@@ -22,7 +22,7 @@ if xls is None:
     st.stop()
 
 with st.spinner("『標賃』を解析中..."):
-    params, warn1 = parse_hyochin(xls)
+    calc_params, sr_params, warn1 = parse_hyochin(xls)
 
 with st.spinner("『R6.12』製品データを解析中..."):
     df_products, warn2 = parse_products(xls, sheet_name="R6.12")
@@ -30,15 +30,13 @@ with st.spinner("『R6.12』製品データを解析中..."):
 for w in (warn1 + warn2):
     st.warning(w)
 
-st.session_state["va_params"] = params
+st.session_state["sr_params"] = sr_params
 st.session_state["df_products_raw"] = df_products
-st.session_state["be_rate"] = float(params.get("break_even_rate") or 0.0)
-st.session_state["req_rate"] = float(params.get("required_rate") or 0.0)
 
 c1, c2, c3 = st.columns(3)
-c1.metric("固定費（計）", f"{params.get('fixed_total'):,}" if params.get('fixed_total') else "-")
-c2.metric("必要利益（計）", f"{params.get('required_profit_total'):,}" if params.get('required_profit_total') else "-")
-c3.metric("年間標準稼働時間（分）", f"{params.get('annual_minutes'):,}" if params.get('annual_minutes') else "-")
+c1.metric("固定費計 (円/年)", f"{calc_params.get('fixed_total', 0):,.0f}")
+c2.metric("必要利益計 (円/年)", f"{calc_params.get('required_profit_total', 0):,.0f}")
+c3.metric("年間標準稼働分 (分/年)", f"{calc_params.get('annual_minutes', 0):,.0f}")
 
 st.divider()
 st.subheader("製品データ（先頭20件プレビュー）")

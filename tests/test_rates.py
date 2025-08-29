@@ -1,5 +1,15 @@
 import math
-from pages.standard_rate import DEFAULT_PARAMS, sanitize_params, compute_rates
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from pages.standard_rate import (
+    DEFAULT_PARAMS,
+    sanitize_params,
+    compute_rates,
+    build_reverse_index,
+)
 
 
 def test_compute_rates_basic():
@@ -38,6 +48,16 @@ def test_dependencies_and_no_cycle():
     }
     for key, node in nodes.items():
         assert key not in node["depends_on"]
+
+
+def test_reverse_index_links_base_to_rates():
+    params = DEFAULT_PARAMS.copy()
+    params, _ = sanitize_params(params)
+    nodes, _ = compute_rates(params)
+    rev = build_reverse_index(nodes)
+    for base in ["labor_cost", "sga_cost", "operation_rate"]:
+        assert "break_even_rate" in rev[base]
+        assert "required_rate" in rev[base]
 
 
 def test_sanitize_params_negative():

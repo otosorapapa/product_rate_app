@@ -10,18 +10,14 @@ from io import BytesIO
 import json
 import re
 import unicodedata
-from typing import Dict, Iterable, List, Tuple
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Callable, Dict, Iterable, List, Tuple, TypedDict
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
-from reportlab.platypus import Table, TableStyle
 import streamlit as st
-from streamlit_js_eval import streamlit_js_eval
+from streamlit.delta_generator import DeltaGenerator
 
 # ================================================================
 # デフォルト値とラベルマップ
@@ -71,6 +67,131 @@ class Results(Dict[str, float]):
     """計算結果の辞書"""
 
 
+class Node(TypedDict, total=False):
+    """計算ノードの系譜情報"""
+
+    key: str
+    label: str
+    value: float
+    formula: str
+    depends_on: List[str]
+    unit: str | None
+
+
+def build_node(
+    key: str,
+    label: str,
+    value: float,
+    formula: str,
+    depends_on: List[str],
+    unit: str | None = None,
+) -> Node:
+    """Node を生成する補助関数"""
+
+    return Node(
+        key=key,
+        label=label,
+        value=float(value),
+        formula=formula,
+        depends_on=depends_on,
+        unit=unit,
+    )
+
+
+@dataclass
+class FormulaSpec:
+    """計算式の仕様"""
+
+    label: str
+    formula: str
+    depends_on: List[str]
+    unit: str | None
+    func: Callable[[Dict[str, Node], Params], float]
+
+
+FORMULAS: Dict[str, FormulaSpec] = {
+    "fixed_total": FormulaSpec(
+        label="固定費計",
+        formula="labor_cost + sga_cost",
+        depends_on=["labor_cost", "sga_cost"],
+        unit="円/年",
+        func=lambda n, p: p["labor_cost"] + p["sga_cost"],
+    ),
+    "required_profit_total": FormulaSpec(
+        label="必要利益計",
+        formula="loan_repayment + tax_payment + future_business",
+        depends_on=["loan_repayment", "tax_payment", "future_business"],
+        unit="円/年",
+        func=lambda n, p: p["loan_repayment"] + p["tax_payment"] + p["future_business"],
+    ),
+    "net_workers": FormulaSpec(
+        label="正味直接工員数",
+        formula="fulltime_workers + 0.75*part1_workers + part2_coefficient*part2_workers",
+        depends_on=["fulltime_workers", "part1_workers", "part2_workers", "part2_coefficient"],
+        unit="人",
+        func=lambda n, p: p["fulltime_workers"]
+        + 0.75 * p["part1_workers"]
+        + p["part2_coefficient"] * p["part2_workers"],
+    ),
+    "minutes_per_day": FormulaSpec(
+        label="1日当り稼働時間（分）",
+        formula="daily_hours*60",
+        depends_on=["daily_hours"],
+        unit="分/日",
+        func=lambda n, p: p["daily_hours"] * 60,
+    ),
+    "standard_daily_minutes": FormulaSpec(
+        label="1日標準稼働分",
+        formula="minutes_per_day*operation_rate",
+        depends_on=["minutes_per_day", "operation_rate"],
+        unit="分/日",
+        func=lambda n, p: n["minutes_per_day"]["value"] * p["operation_rate"],
+    ),
+    "annual_minutes": FormulaSpec(
+        label="年間標準稼働分",
+        formula="net_workers*working_days*standard_daily_minutes",
+        depends_on=["net_workers", "working_days", "standard_daily_minutes"],
+        unit="分/年",
+        func=lambda n, p: n["net_workers"]["value"]
+        * p["working_days"]
+        * n["standard_daily_minutes"]["value"],
+    ),
+    "break_even_rate": FormulaSpec(
+        label="損益分岐賃率",
+        formula="fixed_total/annual_minutes",
+        depends_on=["fixed_total", "annual_minutes"],
+        unit="円/分",
+        func=lambda n, p: n["fixed_total"]["value"] / n["annual_minutes"]["value"],
+    ),
+    "required_rate": FormulaSpec(
+        label="必要賃率",
+        formula="(fixed_total + required_profit_total)/annual_minutes",
+        depends_on=["fixed_total", "required_profit_total", "annual_minutes"],
+        unit="円/分",
+        func=lambda n, p: (n["fixed_total"]["value"] + n["required_profit_total"]["value"])
+        / n["annual_minutes"]["value"],
+    ),
+    "daily_be_va": FormulaSpec(
+        label="1日当り損益分岐付加価値",
+        formula="fixed_total/working_days",
+        depends_on=["fixed_total", "working_days"],
+        unit="円/日",
+        func=lambda n, p: n["fixed_total"]["value"] / p["working_days"],
+    ),
+    "daily_req_va": FormulaSpec(
+        label="1日当り必要利益付加価値",
+        formula="(fixed_total + required_profit_total)/working_days",
+        depends_on=["fixed_total", "required_profit_total", "working_days"],
+        unit="円/日",
+        func=lambda n, p: (n["fixed_total"]["value"] + n["required_profit_total"]["value"])
+        / p["working_days"],
+    ),
+}
+
+# 計算順序
+FORMULA_KEYS = list(FORMULAS.keys())
+
+
 # ================================================================
 # ユーティリティ関数
 # ================================================================
@@ -106,18 +227,29 @@ def _find_value(df: pd.DataFrame, label: str) -> float | None:
     return None
 
 
-def load_from_excel(file, defaults: Params) -> Tuple[Params, List[str]]:
-    """Excelファイルからラベル検索で値を抽出する"""
+@st.cache_data
+def load_from_excel(file, defaults: Params) -> Tuple[Params, List[str], pd.DataFrame]:
+    """Excelファイルからラベル検索で値を抽出する
+
+    Returns
+    -------
+    Tuple[Params, List[str], pd.DataFrame]
+        読み込まれたパラメータ、未検出ラベル、ラベルとキーの対応表
+    """
+
     df = pd.read_excel(file, sheet_name="標賃", header=None)
     params: Params = defaults.copy()
     missing: List[str] = []
+    mapping: List[dict[str, str | float]] = []
     for label, key in LABEL_MAP.items():
         val = _find_value(df, label)
         if val is not None:
             params[key] = float(val)
+            mapping.append({"label": label, "key": key, "value": float(val)})
         else:
             missing.append(label)
-    return params, missing
+    map_df = pd.DataFrame(mapping)
+    return params, missing, map_df
 
 
 def sanitize_params(params: Params) -> Tuple[Params, List[str]]:
@@ -130,6 +262,9 @@ def sanitize_params(params: Params) -> Tuple[Params, List[str]]:
             val = float(raw)
         except (TypeError, ValueError):
             warnings.append(f"{k} が数値でないため既定値を使用しました。")
+            val = default
+        if np.isnan(val):
+            warnings.append(f"{k} が NaN のため既定値を使用しました。")
             val = default
         if val < 0:
             warnings.append(f"{k} が負数のため0に補正しました。")
@@ -154,50 +289,36 @@ def sanitize_params(params: Params) -> Tuple[Params, List[str]]:
         sanitized["fulltime_workers"] = 1.0
     return sanitized, warnings
 
+def compute_rates(params: Params) -> Tuple[Dict[str, Node], Results]:
+    """前提値から各指標を計算する純関数
 
-def compute_rates(params: Params) -> Results:
-    """前提値から損益分岐賃率・必要賃率を計算する"""
-    labor = params["labor_cost"]
-    sga = params["sga_cost"]
-    loan = params["loan_repayment"]
-    tax = params["tax_payment"]
-    future = params["future_business"]
-    fixed_total = labor + sga
-    required_profit_total = loan + tax + future
-    fixed_plus_required = fixed_total + required_profit_total
-    net_workers = (
-        params["fulltime_workers"]
-        + params["part1_workers"] * 0.75
-        + params["part2_workers"] * params["part2_coefficient"]
-    )
-    minutes_per_day = params["daily_hours"] * 60.0
-    standard_daily_minutes = minutes_per_day * params["operation_rate"]
-    annual_minutes = net_workers * params["working_days"] * standard_daily_minutes
-    if annual_minutes <= 0:
-        be_rate = np.nan
-        req_rate = np.nan
-    else:
-        be_rate = fixed_total / annual_minutes
-        req_rate = fixed_plus_required / annual_minutes
-    daily_be_va = fixed_total / params["working_days"] if params["working_days"] > 0 else np.nan
-    daily_req_va = (
-        fixed_plus_required / params["working_days"]
-        if params["working_days"] > 0
-        else np.nan
-    )
-    return Results(
-        fixed_total=fixed_total,
-        required_profit_total=required_profit_total,
-        fixed_plus_required=fixed_plus_required,
-        net_workers=net_workers,
-        minutes_per_day=minutes_per_day,
-        standard_daily_minutes=standard_daily_minutes,
-        annual_minutes=annual_minutes,
-        daily_be_va=daily_be_va,
-        daily_req_va=daily_req_va,
-        break_even_rate=be_rate,
-        required_rate=req_rate,
-    )
+    Parameters
+    ----------
+    params: Params
+        サニタイズ済み入力パラメータ
+
+    Returns
+    -------
+    Tuple[Dict[str, Node], Results]
+        Node 辞書と値のみの辞書（後方互換用）
+    """
+
+    nodes: Dict[str, Node] = {}
+    for key in FORMULA_KEYS:
+        spec = FORMULAS[key]
+        value = spec.func(nodes, params)
+        node = build_node(
+            key=key,
+            label=spec.label,
+            value=value,
+            formula=spec.formula,
+            depends_on=spec.depends_on,
+            unit=spec.unit,
+        )
+        nodes[key] = node
+
+    flat: Results = Results({k: v["value"] for k, v in nodes.items()})
+    return nodes, flat
 
 def sensitivity_series(params: Params, key: str, grid: Iterable[float]) -> pd.Series:
     """指定パラメータを変化させたときの必要賃率を計算"""
@@ -205,38 +326,90 @@ def sensitivity_series(params: Params, key: str, grid: Iterable[float]) -> pd.Se
     for val in grid:
         p = params.copy()
         p[key] = float(val)
-        res = compute_rates(p)
+        _, res = compute_rates(p)
         values.append(res["required_rate"])
     return pd.Series(values, index=list(grid))
 
 
-def plot_sensitivity(params: Params) -> plt.Figure:
-    """操業度・人員・稼働日数の感度分析グラフ"""
+def plot_sensitivity(params: Params):
+    """各種パラメータの感度分析グラフ"""
+
+    import matplotlib.pyplot as plt
+
     op_grid = np.linspace(0.5, 1.0, 11)
     s_op = sensitivity_series(params, "operation_rate", op_grid)
+
     worker_grid = np.arange(1, 11)
     s_worker = sensitivity_series(params, "fulltime_workers", worker_grid)
+
     days_grid = np.arange(200, 261, 10)
     s_days = sensitivity_series(params, "working_days", days_grid)
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    axes[0].plot(s_op.index, s_op.values)
+
+    factor_grid = np.linspace(0.8, 1.2, 9)
+    fixed_vals: List[float] = []
+    profit_vals: List[float] = []
+    for f in factor_grid:
+        p_fixed = params.copy()
+        p_fixed["labor_cost"] *= f
+        p_fixed["sga_cost"] *= f
+        _, res_fixed = compute_rates(p_fixed)
+        fixed_vals.append(res_fixed["required_rate"])
+
+        p_profit = params.copy()
+        p_profit["loan_repayment"] *= f
+        p_profit["tax_payment"] *= f
+        p_profit["future_business"] *= f
+        _, res_profit = compute_rates(p_profit)
+        profit_vals.append(res_profit["required_rate"])
+
+    s_fixed = pd.Series(fixed_vals, index=factor_grid)
+    s_profit = pd.Series(profit_vals, index=factor_grid)
+
+    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
+    axes[0].plot(s_op.index, s_op.values, label="必要賃率")
     axes[0].set_title("操業度→必要賃率")
     axes[0].set_xlabel("操業度")
-    axes[0].set_ylabel("円/分")
-    axes[1].plot(s_worker.index, s_worker.values)
+
+    axes[1].plot(s_worker.index, s_worker.values, label="必要賃率")
     axes[1].set_title("正社員数→必要賃率")
     axes[1].set_xlabel("正社員数")
-    axes[2].plot(s_days.index, s_days.values)
+
+    axes[2].plot(s_days.index, s_days.values, label="必要賃率")
     axes[2].set_title("稼働日数→必要賃率")
     axes[2].set_xlabel("年間稼働日数")
-    for ax in axes:
+
+    axes[3].plot(s_fixed.index, s_fixed.values, label="必要賃率")
+    axes[3].set_title("固定費±20%→必要賃率")
+    axes[3].set_xlabel("倍率")
+
+    axes[4].plot(s_profit.index, s_profit.values, label="必要賃率")
+    axes[4].set_title("必要利益±20%→必要賃率")
+    axes[4].set_xlabel("倍率")
+
+    for series, ax in zip([s_op, s_worker, s_days, s_fixed, s_profit], axes):
+        ax.set_ylabel("円/分")
         ax.grid(True)
+        ax.legend()
+        ax.annotate(
+            f"{series.values[-1]:.3f}",
+            xy=(series.index[-1], series.values[-1]),
+            textcoords="offset points",
+            xytext=(0, -10),
+            ha="center",
+        )
+
     fig.tight_layout()
     return fig
 
 
-def generate_pdf(params: Params, results: Results, fig: plt.Figure) -> bytes:
+def generate_pdf(nodes: Dict[str, Node], fig) -> bytes:
     """計算結果を1ページPDFにまとめる"""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Table, TableStyle
+
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
@@ -245,22 +418,28 @@ def generate_pdf(params: Params, results: Results, fig: plt.Figure) -> bytes:
     c.drawString(40, y, "標準賃率計算サマリー")
     y -= 30
     c.setFont("Helvetica", 12)
-    c.drawString(40, y, f"損益分岐賃率（円/分）: {results['break_even_rate']:.3f}")
+    c.drawString(40, y, f"損益分岐賃率（円/分）: {nodes['break_even_rate']['value']:.3f}")
     y -= 15
-    c.drawString(40, y, f"必要賃率（円/分）: {results['required_rate']:.3f}")
+    c.drawString(40, y, f"必要賃率（円/分）: {nodes['required_rate']['value']:.3f}")
     y -= 15
-    c.drawString(40, y, f"年間標準稼働時間（分）: {results['annual_minutes']:.1f}")
+    c.drawString(40, y, f"年間標準稼働時間（分）: {nodes['annual_minutes']['value']:.1f}")
     y -= 15
-    c.drawString(40, y, f"正味直接工員数合計: {results['net_workers']:.2f}")
+    c.drawString(40, y, f"正味直接工員数合計: {nodes['net_workers']['value']:.2f}")
     y -= 25
-    table_data = [
-        ["項目", "値"],
-        ["固定費計", f"{results['fixed_total']:,}"],
-        ["必要利益計", f"{results['required_profit_total']:,}"],
-        ["1日当り損益分岐付加価値", f"{results['daily_be_va']:,}"],
-        ["1日当り必要利益付加価値", f"{results['daily_req_va']:,}"],
+    top_keys = [
+        "break_even_rate",
+        "required_rate",
+        "annual_minutes",
+        "fixed_total",
+        "required_profit_total",
     ]
-    tbl = Table(table_data, colWidths=[180, 180])
+    table_data = [["項目", "値", "式", "依存要素"]]
+    for k in top_keys:
+        n = nodes[k]
+        table_data.append(
+            [n["label"], f"{n['value']:,}", n["formula"], ", ".join(n["depends_on"])]
+        )
+    tbl = Table(table_data, colWidths=[120, 80, 150, 150])
     tbl.setStyle(
         TableStyle(
             [
@@ -284,6 +463,8 @@ def generate_pdf(params: Params, results: Results, fig: plt.Figure) -> bytes:
 
 
 def main() -> None:
+    from streamlit_js_eval import streamlit_js_eval
+
     st.set_page_config(page_title="標準賃率計算", layout="wide")
     st.title("標準賃率計算（円/分）")
 
@@ -305,14 +486,23 @@ def main() -> None:
     params: Params = st.session_state.sr_params.copy()
 
     st.sidebar.header("入力")
+    if "highlight" not in st.session_state:
+        st.session_state.highlight = []
+    placeholders: Dict[str, DeltaGenerator] = {}
+
     st.sidebar.subheader("A) 必要固定費（円/年）")
     params["labor_cost"] = st.sidebar.number_input(
         "労務費", value=params["labor_cost"], step=1.0, format="%.0f", min_value=0.0
     )
+    if "labor_cost" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["labor_cost"] = st.sidebar.empty()
     params["sga_cost"] = st.sidebar.number_input(
         "販管費", value=params["sga_cost"], step=1.0, format="%.0f", min_value=0.0
     )
-    st.sidebar.caption(f"固定費計 = {params['labor_cost'] + params['sga_cost']:,}")
+    if "sga_cost" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["sga_cost"] = st.sidebar.empty()
 
     st.sidebar.subheader("B) 必要利益（円/年）")
     params["loan_repayment"] = st.sidebar.number_input(
@@ -322,6 +512,9 @@ def main() -> None:
         format="%.0f",
         min_value=0.0,
     )
+    if "loan_repayment" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["loan_repayment"] = st.sidebar.empty()
     params["tax_payment"] = st.sidebar.number_input(
         "納税・納付",
         value=params["tax_payment"],
@@ -329,6 +522,9 @@ def main() -> None:
         format="%.0f",
         min_value=0.0,
     )
+    if "tax_payment" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["tax_payment"] = st.sidebar.empty()
     params["future_business"] = st.sidebar.number_input(
         "未来事業費",
         value=params["future_business"],
@@ -336,9 +532,9 @@ def main() -> None:
         format="%.0f",
         min_value=0.0,
     )
-    st.sidebar.caption(
-        f"必要利益計 = {params['loan_repayment'] + params['tax_payment'] + params['future_business']:,}"
-    )
+    if "future_business" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["future_business"] = st.sidebar.empty()
 
     st.sidebar.subheader("C) 工数前提")
     params["fulltime_workers"] = st.sidebar.number_input(
@@ -348,6 +544,9 @@ def main() -> None:
         format="%.2f",
         min_value=0.0,
     )
+    if "fulltime_workers" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["fulltime_workers"] = st.sidebar.empty()
     st.sidebar.caption("労働係数=1.00")
     params["part1_workers"] = st.sidebar.number_input(
         "準社員①：人数",
@@ -356,6 +555,9 @@ def main() -> None:
         format="%.2f",
         min_value=0.0,
     )
+    if "part1_workers" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["part1_workers"] = st.sidebar.empty()
     st.sidebar.caption("準社員① 労働係数=0.75")
     params["part2_workers"] = st.sidebar.number_input(
         "準社員②：人数",
@@ -364,6 +566,9 @@ def main() -> None:
         format="%.2f",
         min_value=0.0,
     )
+    if "part2_workers" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["part2_workers"] = st.sidebar.empty()
     params["part2_coefficient"] = st.sidebar.slider(
         "準社員②：労働係数",
         value=float(params["part2_coefficient"]),
@@ -371,12 +576,9 @@ def main() -> None:
         max_value=1.0,
         step=0.01,
     )
-    net_direct = (
-        params["fulltime_workers"]
-        + params["part1_workers"] * 0.75
-        + params["part2_workers"] * params["part2_coefficient"]
-    )
-    st.sidebar.caption(f"正味直接工員数合計 = {net_direct:.2f}")
+    if "part2_coefficient" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["part2_coefficient"] = st.sidebar.empty()
 
     params["working_days"] = st.sidebar.number_input(
         "年間稼働日数（日）",
@@ -385,6 +587,9 @@ def main() -> None:
         format="%.0f",
         min_value=1.0,
     )
+    if "working_days" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["working_days"] = st.sidebar.empty()
     params["daily_hours"] = st.sidebar.number_input(
         "1日当り稼働時間（時間）",
         value=params["daily_hours"],
@@ -392,17 +597,30 @@ def main() -> None:
         format="%.2f",
         min_value=0.1,
     )
-    st.sidebar.caption(f"= {params['daily_hours']*60:.1f} 分")
+    if "daily_hours" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["daily_hours"] = st.sidebar.empty()
     params["operation_rate"] = st.sidebar.slider(
-        "1日当り操業度", value=float(params["operation_rate"]), min_value=0.5, max_value=1.0, step=0.01
+        "1日当り操業度",
+        value=float(params["operation_rate"]),
+        min_value=0.5,
+        max_value=1.0,
+        step=0.01,
     )
+    if "operation_rate" in st.session_state.highlight:
+        st.sidebar.info("← この指標が影響します")
+    placeholders["operation_rate"] = st.sidebar.empty()
 
     st.sidebar.subheader("D) ファイル取込（任意）")
     uploaded = st.sidebar.file_uploader("標準賃率計算シート.xlsx", type="xlsx")
+    params_before = params.copy()
+    before_sanitized, _ = sanitize_params(params_before)
+    _, before_results = compute_rates(before_sanitized)
     if uploaded is not None:
         try:
-            params_from_file, missing = load_from_excel(uploaded, params)
-            params.update(params_from_file)
+            loaded_params, missing, mapping_df = load_from_excel(uploaded, params)
+            params.update(loaded_params)
+            st.sidebar.dataframe(mapping_df, use_container_width=True)
             if missing:
                 st.sidebar.warning("未検出ラベル: " + ", ".join(missing))
         except Exception as e:
@@ -417,7 +635,24 @@ def main() -> None:
         key="save_params",
     )
 
-    results = compute_rates(params)
+    nodes, results = compute_rates(params)
+
+    if uploaded is not None:
+        diff = results["required_rate"] - before_results["required_rate"]
+        diff_df = pd.DataFrame(
+            [{"指標": "required_rate", "before": before_results["required_rate"], "after": results["required_rate"], "差分": diff}]
+        )
+        st.sidebar.dataframe(diff_df)
+
+    reverse_index: Dict[str, List[str]] = defaultdict(list)
+    for node in nodes.values():
+        for dep in node["depends_on"]:
+            reverse_index[dep].append(node["key"])
+
+    for k, ph in placeholders.items():
+        affected = ", ".join(reverse_index.get(k, []))
+        if affected:
+            ph.caption(f"この入力が影響する指標: {affected}")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("損益分岐賃率（円/分）", f"{results['break_even_rate']:.3f}")
@@ -425,38 +660,56 @@ def main() -> None:
     c3.metric("年間標準稼働時間（分）", f"{results['annual_minutes']:.0f}")
     c4.metric("正味直接工員数合計", f"{results['net_workers']:.2f}")
 
-    breakdown_data = [
-        ("固定費", "労務費", params["labor_cost"]),
-        ("固定費", "販管費", params["sga_cost"]),
-        ("固定費", "固定費計", results["fixed_total"]),
-        ("必要利益", "借入返済（年）", params["loan_repayment"]),
-        ("必要利益", "納税・納付", params["tax_payment"]),
-        ("必要利益", "未来事業費", params["future_business"]),
-        ("必要利益", "必要利益計", results["required_profit_total"]),
-        ("工数前提", "正社員数", params["fulltime_workers"]),
-        ("工数前提", "準社員①数", params["part1_workers"]),
-        ("工数前提", "準社員②数", params["part2_workers"]),
-        ("工数前提", "準社員②労働係数", params["part2_coefficient"]),
-        ("工数前提", "正味直接工員数合計", results["net_workers"]),
-        ("工数前提", "年間稼働日数", params["working_days"]),
-        ("工数前提", "1日当り稼働時間（分）", results["minutes_per_day"]),
-        ("工数前提", "1日当り操業度", params["operation_rate"]),
-        ("付加価値", "1日当り損益分岐付加価値", results["daily_be_va"]),
-        ("付加価値", "1日当り必要利益付加価値", results["daily_req_va"]),
-    ]
-    df_break = pd.DataFrame(breakdown_data, columns=["区分", "項目", "値"])
     st.subheader("ブレークダウン")
-    st.dataframe(df_break.style.format({"値": "{:,.3f}"}), use_container_width=True)
+    cat_map = {
+        "fixed_total": "固定費",
+        "required_profit_total": "必要利益",
+        "net_workers": "工数前提",
+        "minutes_per_day": "工数前提",
+        "standard_daily_minutes": "工数前提",
+        "annual_minutes": "工数前提",
+        "break_even_rate": "賃率",
+        "required_rate": "賃率",
+        "daily_be_va": "付加価値",
+        "daily_req_va": "付加価値",
+    }
+    df_break = pd.DataFrame(
+        [
+            (
+                cat_map.get(n["key"], ""),
+                n["label"],
+                n["value"],
+                n.get("unit", ""),
+                n["formula"],
+                ", ".join(n["depends_on"]),
+            )
+            for n in nodes.values()
+        ],
+        columns=["区分", "項目", "値", "単位", "式", "依存要素"],
+    )
+    event = st.dataframe(
+        df_break,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+    if event and event.get("selection"):
+        rows = event["selection"].get("rows", [])
+        if rows:
+            idx = rows[0]
+            deps = df_break.iloc[idx]["依存要素"].split(", ") if df_break.iloc[idx]["依存要素"] else []
+            st.session_state.highlight = [d for d in deps if d]
 
     st.subheader("感度分析")
     fig = plot_sensitivity(params)
     st.pyplot(fig)
 
-    df_row = pd.DataFrame([{**params, **results}])
-    csv = df_row.to_csv(index=False).encode("utf-8-sig")
+    df_csv = pd.DataFrame(list(nodes.values()))
+    df_csv["depends_on"] = df_csv["depends_on"].apply(lambda x: ",".join(x))
+    csv = df_csv.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("CSVエクスポート", data=csv, file_name="standard_rate.csv", mime="text/csv")
 
-    pdf_bytes = generate_pdf(params, results, fig)
+    pdf_bytes = generate_pdf(nodes, fig)
     st.download_button(
         "PDFエクスポート",
         data=pdf_bytes,

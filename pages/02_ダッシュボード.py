@@ -11,7 +11,7 @@ from utils import compute_results
 from standard_rate_core import DEFAULT_PARAMS, sanitize_params, compute_rates
 
 st.title("② ダッシュボード")
-scenario_name = st.session_state.get("current_scenario", "Base")
+scenario_name = st.session_state.get("current_scenario", "基本")
 st.caption(f"適用中シナリオ: {scenario_name}")
 
 if "df_products_raw" not in st.session_state or st.session_state["df_products_raw"] is None or len(st.session_state["df_products_raw"]) == 0:
@@ -53,16 +53,30 @@ if "df_products_sim" in st.session_state:
     )
 
 # Global filters
-fcol1, fcol2, fcol3 = st.columns([1,1,2])
+fcol1, fcol2, fcol3, fcol4 = st.columns([1,1,2,2])
 classes = df["rate_class"].dropna().unique().tolist()
 selected_classes = fcol1.multiselect("商品分類で絞り込み", classes, default=classes)
 search = fcol2.text_input("製品名 検索（部分一致）", "")
-mpu_min, mpu_max = fcol3.slider("分/個（製造リードタイム）の範囲", float(np.nan_to_num(df["minutes_per_unit"].min(), nan=0.0)), float(np.nan_to_num(df["minutes_per_unit"].max(), nan=10.0)), value=(0.0, float(np.nan_to_num(df["minutes_per_unit"].max(), nan=10.0))))
+mpu_min, mpu_max = fcol3.slider(
+    "分/個（製造リードタイム）の範囲",
+    float(np.nan_to_num(df["minutes_per_unit"].min(), nan=0.0)),
+    float(np.nan_to_num(df["minutes_per_unit"].max(), nan=10.0)),
+    value=(0.0, float(np.nan_to_num(df["minutes_per_unit"].max(), nan=10.0))),
+)
+vapm_min_val = float(np.nan_to_num(df["va_per_min"].min(), nan=0.0))
+vapm_max_val = float(np.nan_to_num(df["va_per_min"].max(), nan=0.0))
+vapm_min, vapm_max = fcol4.slider(
+    "付加価値/分の範囲",
+    vapm_min_val,
+    max(vapm_min_val, vapm_max_val),
+    value=(vapm_min_val, max(vapm_min_val, vapm_max_val)),
+)
 
 mask = df["rate_class"].isin(selected_classes)
 if search:
     mask &= df["product_name"].astype(str).str.contains(search, na=False)
 mask &= df["minutes_per_unit"].fillna(0.0).between(mpu_min, mpu_max)
+mask &= df["va_per_min"].fillna(0.0).between(vapm_min, vapm_max)
 df_view = df[mask].copy()
 
 # KPI cards
@@ -77,21 +91,37 @@ col4.metric("平均 付加価値/分", f"{avg_vapm:,.1f}")
 tabs = st.tabs(["全体分布（散布図）", "分類状況（棒/円）", "未達SKU（パレート）", "SKUテーブル"])
 
 with tabs[0]:
-    st.caption("横軸=分/個（製造リードタイム）, 縦軸=付加価値/分。基準線=各シナリオの損益分岐賃率および必要賃率。")
+    st.caption("散布図の軸を選択できます。基準線=各シナリオの損益分岐賃率および必要賃率。")
+    metrics = {
+        "分/個": "minutes_per_unit",
+        "付加価値/分": "va_per_min",
+        "日産合計(分)": "daily_total_minutes",
+        "粗利/個": "gp_per_unit",
+    }
+    x_label = st.selectbox("横軸", list(metrics.keys()), index=0)
+    y_label = st.selectbox("縦軸", list(metrics.keys()), index=1)
+    x_enc = alt.X(f"{metrics[x_label]}:Q", title=x_label)
+    if metrics[y_label] == "va_per_min":
+        y_enc = alt.Y(f"{metrics[y_label]}:Q", title=y_label, scale=alt.Scale(domain=(vapm_min, vapm_max)))
+    else:
+        y_enc = alt.Y(f"{metrics[y_label]}:Q", title=y_label)
     base = alt.Chart(df_view).mark_circle().encode(
-        x=alt.X("minutes_per_unit:Q", title="分/個"),
-        y=alt.Y("va_per_min:Q", title="付加価値/分"),
-        tooltip=["product_name:N","minutes_per_unit:Q","va_per_min:Q","rate_class:N"]
+        x=x_enc,
+        y=y_enc,
+        tooltip=["product_name:N", f"{metrics[x_label]}:Q", f"{metrics[y_label]}:Q", "rate_class:N"],
     ).properties(height=420)
     color = base.encode(color=alt.Color("rate_class:N", legend=alt.Legend(title="分類")))
-    rate_df = pd.DataFrame(rate_lines)
-    rule_chart = alt.Chart(rate_df).mark_rule().encode(
-        y="y:Q",
-        color=alt.Color("type:N", legend=alt.Legend(title="基準線")),
-        detail="scenario:N",
-        strokeDash="type:N",
-    )
-    st.altair_chart(color + rule_chart, use_container_width=True)
+    chart = color
+    if metrics[y_label] == "va_per_min":
+        rate_df = pd.DataFrame(rate_lines)
+        rule_chart = alt.Chart(rate_df).mark_rule().encode(
+            y="y:Q",
+            color=alt.Color("type:N", legend=alt.Legend(title="基準線")),
+            detail="scenario:N",
+            strokeDash="type:N",
+        )
+        chart = chart + rule_chart
+    st.altair_chart(chart, use_container_width=True)
 
 with tabs[1]:
     c1, c2 = st.columns([1.2,1])

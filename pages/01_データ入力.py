@@ -57,11 +57,11 @@ df_products = compute_results(df_products, be_rate, req_rate)
 st.session_state["sr_params"] = sr_params
 st.session_state["df_products_raw"] = df_products
 if "scenarios" not in st.session_state:
-    st.session_state["scenarios"] = {"Base": sr_params.copy()}
-    st.session_state["current_scenario"] = "Base"
+    st.session_state["scenarios"] = {"基本": sr_params.copy()}
+    st.session_state["current_scenario"] = "基本"
 else:
-    st.session_state["scenarios"].setdefault("Base", sr_params.copy())
-    st.session_state.setdefault("current_scenario", "Base")
+    st.session_state["scenarios"].setdefault("基本", sr_params.copy())
+    st.session_state.setdefault("current_scenario", "基本")
 
 st.caption(f"適用中シナリオ: {st.session_state['current_scenario']}")
 
@@ -119,9 +119,9 @@ if st.sidebar.button("プレビュー更新"):
     st.session_state["req_rate"] = rate_res["required_rate"]
     df_new = compute_results(df_new, rate_res["break_even_rate"], rate_res["required_rate"])
     st.session_state["df_products_sim"] = df_new
-elif st.sidebar.button("Baseに戻す"):
+elif st.sidebar.button("基本に戻す"):
     st.session_state.pop("df_products_sim", None)
-    st.session_state["current_scenario"] = "Base"
+    st.session_state["current_scenario"] = "基本"
 
 scenario_name = st.sidebar.text_input("シナリオ保存名", "")
 if st.sidebar.button("シナリオへ保存") and scenario_name:
@@ -171,6 +171,38 @@ st.dataframe(styled, use_container_width=True)
 
 csv = df_display.to_csv(index=False).encode("utf-8-sig")
 st.download_button("CSVダウンロード", data=csv, file_name="products_sim.csv", mime="text/csv")
+
+st.subheader("5) 製品追加")
+with st.form("add_product"):
+    c1, c2 = st.columns(2)
+    prod_no = c1.text_input("製品番号", "")
+    prod_name = c2.text_input("製品名", "")
+    c3, c4, c5 = st.columns(3)
+    actual_price = c3.number_input("実際売単価", value=0.0, step=1.0)
+    material_cost = c4.number_input("材料原価", value=0.0, step=1.0)
+    subcontract_cost = c5.number_input("外注費", value=0.0, step=1.0)
+    c6, c7, c8 = st.columns(3)
+    minutes_per_unit = c6.number_input("分/個", value=0.0, step=0.1)
+    daily_qty = c7.number_input("日産数", value=0.0, step=1.0)
+    rate_class = c8.text_input("商品分類", "")
+    submitted = st.form_submit_button("製品を追加")
+    if submitted:
+        new_row = {
+            "product_no": prod_no,
+            "product_name": prod_name,
+            "actual_unit_price": actual_price,
+            "material_unit_cost": material_cost,
+            "subcontract_cost": subcontract_cost,
+            "minutes_per_unit": minutes_per_unit,
+            "daily_qty": daily_qty,
+            "rate_class": rate_class,
+        }
+        df_new = pd.concat([st.session_state["df_products_raw"], pd.DataFrame([new_row])], ignore_index=True)
+        df_new = compute_results(df_new, st.session_state["be_rate"], st.session_state["req_rate"])
+        st.session_state["df_products_raw"] = df_new
+        if "df_products_sim" in st.session_state:
+            st.session_state["df_products_sim"] = df_new.copy()
+        st.success("製品を追加しました。")
 
 try:
     st.page_link("pages/02_ダッシュボード.py", label="② ダッシュボードへ")

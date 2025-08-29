@@ -4,6 +4,40 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Any, Tuple, Optional
 
+# --------- Column definitions (PDF schema) ---------
+# Mapping of internal field names to display label/units
+PRODUCT_SCHEMA: Dict[str, Dict[str, str]] = {
+    "product_no": {"label": "製品№", "unit": None},
+    "product_name": {"label": "製品名", "unit": None},
+    "actual_unit_price": {"label": "実際売単価", "unit": "円"},
+    "required_selling_price_excel": {"label": "必要販売単価", "unit": "円"},
+    "be_unit_price_excel": {"label": "損益分岐単価", "unit": "円"},
+    "req_va_unit_price_excel": {"label": "必要単価", "unit": "円"},
+    "subcontract_cost": {"label": "外注費", "unit": "円"},
+    "material_unit_cost": {"label": "原価（材料費）", "unit": "円"},
+    "gp_per_unit_excel": {"label": "粗利", "unit": "円"},
+    "monthly_qty": {"label": "月間製造数(個数)", "unit": "個"},
+    "monthly_sales": {"label": "月間売上", "unit": "円"},
+    "monthly_payments": {"label": "月間支払", "unit": "円"},
+    "va_ratio": {"label": "付加価値率", "unit": "%"},
+    "daily_qty": {"label": "日産製造数（個数）", "unit": "個"},
+    "minutes_per_unit": {"label": "分/個", "unit": "分"},
+    "daily_total_minutes": {"label": "日産合計(分)", "unit": "分"},
+    "daily_va": {"label": "付加価値", "unit": "円"},
+    "va_per_min": {"label": "1分当り付加価値", "unit": "円"},
+    "va_per_order_per_day": {"label": "受注数当り付加価値/日", "unit": "円"},
+    "va_per_min2": {"label": "1分当り付加価値2", "unit": "円"},
+}
+
+# Manufacturing process columns to be summed into minutes_per_unit
+PROCESS_COLS: List[str] = [
+    "準備","原材料調整","生地調整","熱工程","熱工程2","熱工程3","充填",
+    "成型加工","成型加工2","熱工程4","前加工","前加工2","機械準備",
+    "機械出し","機械分解","機械組立","冷却","片付け","準備2","非加熱材料調整",
+    "熱工程5","冷却2","手細工加工等","手細工加工等2","仕上げ加工",
+    "熱加工","冷加工","包装","片付け2",
+]
+
 # --------------- Low-level helpers ---------------
 def _clean(s):
     if pd.isna(s):
@@ -131,8 +165,8 @@ def parse_hyochin(xls: pd.ExcelFile) -> Tuple[Dict[str, float], Dict[str, float]
     ]}
     return params, sr_params, warnings
 
-def parse_products(xls: pd.ExcelFile, sheet_name: str="R6.12") -> Tuple[pd.DataFrame, List[str]]:
-    """『R6.12』の製品マスタを構造化"""
+def parse_products(xls: pd.ExcelFile, sheet_name: str = "R6.12") -> Tuple[pd.DataFrame, List[str]]:
+    """『R6.12』の製品マスタをPDF列スキーマに沿って構造化"""
     warnings: List[str] = []
     try:
         raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
@@ -146,21 +180,14 @@ def parse_products(xls: pd.ExcelFile, sheet_name: str="R6.12") -> Tuple[pd.DataF
         return pd.DataFrame(), warnings
 
     header_row = raw.iloc[hdr_row]
-    unit_row = raw.iloc[hdr_row+1] if hdr_row+1 < len(raw) else pd.Series(dtype=object)
+    unit_row = raw.iloc[hdr_row + 1] if hdr_row + 1 < len(raw) else pd.Series(dtype=object)
     cols = build_columns_from_two_rows(header_row, unit_row)
-    data = raw.iloc[hdr_row+2:].reset_index(drop=True)
+    data = raw.iloc[hdr_row + 2 :].reset_index(drop=True)
     if len(cols) != data.shape[1]:
-        data = data.iloc[:, :len(cols)]
-    data.columns = cols
-    data.columns = [c.replace("\n","") if isinstance(c,str) else c for c in data.columns]
+        data = data.iloc[:, : len(cols)]
+    data.columns = [c.replace("\n", "") if isinstance(c, str) else c for c in cols]
 
-    keep = [k for k in [
-        "製品№ (1)","製品名 (大福生地)","実際売単価","必要販売単価","損益分岐単価","必要単価",
-        "外注費","原価（材料費）","粗利 (0)","月間製造数(個数）","月間売上 (0)","月間支払 (0)",
-        "付加価値率","日産製造数（個数）","合計 (151)","付加価値","1分当り付加価値","時","分",
-        "受注数当り付加価値/日 (0)","1分当り付加価値2 (0)"
-    ] if k in data.columns]
-    df = data[keep].copy()
+    df = data.copy()
 
     def to_float(x):
         try:
@@ -170,63 +197,28 @@ def parse_products(xls: pd.ExcelFile, sheet_name: str="R6.12") -> Tuple[pd.DataF
         except Exception:
             return np.nan
 
+    # Rename columns based on labels defined in PRODUCT_SCHEMA
+    rename_map: Dict[str, str] = {}
+    for key, meta in PRODUCT_SCHEMA.items():
+        label = meta["label"]
+        matches = [c for c in df.columns if str(c).startswith(label)]
+        for m in matches:
+            rename_map[m] = key
+
+    df = df.rename(columns=rename_map)
+
     for col in df.columns:
-        if col not in ["製品№ (1)","製品名 (大福生地)"]:
+        if col not in ["product_no", "product_name"]:
             df[col] = df[col].map(to_float)
 
-    rename_map = {
-        "製品№ (1)": "product_no",
-        "製品名 (大福生地)": "product_name",
-        "実際売単価": "actual_unit_price",
-        "原価（材料費）": "material_unit_cost",
-        "日産製造数（個数）": "daily_qty",
-        "分": "minutes_per_unit",
-        "合計 (151)": "daily_total_minutes",
-        "付加価値": "daily_va",
-        "1分当り付加価値": "va_per_min",
-        "必要販売単価": "required_selling_price_excel",
-        "損益分岐単価": "be_unit_price_excel",
-        "必要単価": "req_va_unit_price_excel",
-        "粗利 (0)": "gp_per_unit_excel",
-    }
-    df = df.rename(columns={k:v for k,v in rename_map.items() if k in df.columns})
+    # Ensure process columns exist and are numeric
+    for pcol in PROCESS_COLS:
+        if pcol not in df.columns:
+            df[pcol] = 0.0
+        df[pcol] = df[pcol].map(to_float)
 
-    # Core fields
-    df["gp_per_unit"] = df.get("actual_unit_price", np.nan) - df.get("material_unit_cost", np.nan)
-
-    # Safe compute minutes_per_unit
-    if "minutes_per_unit" not in df.columns:
-        df["minutes_per_unit"] = np.nan
-    numer = series_or_nan(df, "daily_total_minutes")
-    denom = series_or_nan(df, "daily_qty").replace({0: np.nan})
-    with np.errstate(divide='ignore', invalid='ignore'):
-        computed_mpu = numer / denom
-    df["minutes_per_unit"] = df["minutes_per_unit"].fillna(computed_mpu)
-
-    # Safe compute daily_total_minutes
-    if "daily_total_minutes" not in df.columns:
-        df["daily_total_minutes"] = np.nan
-    mpu = series_or_nan(df, "minutes_per_unit")
-    qty = series_or_nan(df, "daily_qty")
-    with np.errstate(divide='ignore', invalid='ignore'):
-        computed_total = mpu * qty
-    df["daily_total_minutes"] = df["daily_total_minutes"].fillna(computed_total)
-
-    # daily_va
-    if "daily_va" not in df.columns:
-        df["daily_va"] = np.nan
-    gpu = series_or_nan(df, "gp_per_unit")
-    with np.errstate(divide='ignore', invalid='ignore'):
-        computed_va = gpu * qty
-    df["daily_va"] = df["daily_va"].fillna(computed_va)
-
-    # va_per_min
-    if "va_per_min" not in df.columns:
-        df["va_per_min"] = np.nan
-    total_min = series_or_nan(df, "daily_total_minutes").replace({0: np.nan})
-    with np.errstate(divide='ignore', invalid='ignore'):
-        computed_vapm = df["daily_va"] / total_min
-    df["va_per_min"] = df["va_per_min"].fillna(computed_vapm)
+    # minutes_per_unit from process columns
+    df["minutes_per_unit"] = df[PROCESS_COLS].sum(axis=1, skipna=True)
 
     df = df[~(df.get("product_name").isna() & df.get("actual_unit_price").isna())].reset_index(drop=True)
     return df, warnings
@@ -236,22 +228,46 @@ def compute_results(df_products: pd.DataFrame, break_even_rate: float, required_
     df = df_products.copy()
     be_rate = 0.0 if break_even_rate is None else float(break_even_rate)
     req_rate = 0.0 if required_rate is None else float(required_rate)
-
+    # recompute core metrics from raw columns
+    actual = series_or_nan(df, "actual_unit_price")
+    material = series_or_nan(df, "material_unit_cost")
+    subcontract = series_or_nan(df, "subcontract_cost")
+    qty = series_or_nan(df, "daily_qty")
     mpu = series_or_nan(df, "minutes_per_unit")
+
+    df["gp_per_unit"] = actual - material - subcontract
+    df["daily_total_minutes"] = mpu * qty
+    df["daily_va"] = df["gp_per_unit"] * qty
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df["va_per_min"] = df["daily_va"] / df["daily_total_minutes"].replace({0: np.nan})
+
     df["be_va_unit_price"] = mpu * be_rate
     df["req_va_unit_price"] = mpu * req_rate
-    df["required_selling_price"] = df.get("material_unit_cost") + df["req_va_unit_price"]
-    df["price_gap_vs_required"] = df.get("actual_unit_price") - df["required_selling_price"]
-    df["rate_gap_vs_required"] = df.get("va_per_min") - req_rate
+    df["required_selling_price"] = material + subcontract + df["req_va_unit_price"]
+    df["price_gap_vs_required"] = actual - df["required_selling_price"]
+    df["rate_gap_vs_required"] = df["va_per_min"] - req_rate
     df["meets_required_rate"] = df["rate_gap_vs_required"] >= 0
     df["rate_class"] = df["rate_gap_vs_required"].apply(classify_rate_gap)
+
     out_cols = [
-        "product_no","product_name",
-        "actual_unit_price","material_unit_cost",
-        "minutes_per_unit","daily_qty","daily_total_minutes",
-        "gp_per_unit","daily_va","va_per_min",
-        "be_va_unit_price","req_va_unit_price","required_selling_price",
-        "price_gap_vs_required","rate_gap_vs_required","meets_required_rate","rate_class"
+        "product_no",
+        "product_name",
+        "actual_unit_price",
+        "material_unit_cost",
+        "subcontract_cost",
+        "minutes_per_unit",
+        "daily_qty",
+        "daily_total_minutes",
+        "gp_per_unit",
+        "daily_va",
+        "va_per_min",
+        "be_va_unit_price",
+        "req_va_unit_price",
+        "required_selling_price",
+        "price_gap_vs_required",
+        "rate_gap_vs_required",
+        "meets_required_rate",
+        "rate_class",
     ]
     out_cols = [c for c in out_cols if c in df.columns]
     return df[out_cols]

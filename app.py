@@ -6,6 +6,19 @@ from typing import Dict, List, Any
 
 st.set_page_config(page_title="製品賃率計算アプリ", layout="wide")
 
+# Custom dark theme
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-color: #1e1e1e;
+        color: #f5f5f5;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ============== Utilities ==============
 def _clean(s):
     if pd.isna(s):
@@ -274,6 +287,37 @@ if xls is None:
 params = parse_hyochin(xls)
 df_products_raw = parse_products(xls, sheet_name="R6.12")
 
+# Manual product entry
+st.sidebar.header("製品情報の追加")
+if "extra_products" not in st.session_state:
+    st.session_state.extra_products = []
+with st.sidebar.form("add_product", clear_on_submit=True):
+    st.write("製品情報を手入力で追加")
+    p_no = st.text_input("製品番号")
+    p_name = st.text_input("製品名")
+    p_price = st.number_input("実際売単価", value=0.0)
+    p_cost = st.number_input("材料原価", value=0.0)
+    p_mpu = st.number_input("分/個", value=0.0)
+    p_qty = st.number_input("日産数", value=0.0)
+    submitted = st.form_submit_button("追加")
+if submitted:
+    st.session_state.extra_products.append({
+        "product_no": p_no,
+        "product_name": p_name,
+        "actual_unit_price": p_price,
+        "material_unit_cost": p_cost,
+        "minutes_per_unit": p_mpu,
+        "daily_qty": p_qty,
+    })
+if st.session_state.extra_products:
+    df_manual = pd.DataFrame(st.session_state.extra_products)
+    df_manual["gp_per_unit"] = df_manual["actual_unit_price"] - df_manual["material_unit_cost"]
+    df_manual["daily_total_minutes"] = df_manual["minutes_per_unit"] * df_manual["daily_qty"]
+    df_manual["daily_va"] = df_manual["gp_per_unit"] * df_manual["daily_qty"]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df_manual["va_per_min"] = df_manual["daily_va"] / df_manual["daily_total_minutes"]
+    df_products_raw = pd.concat([df_products_raw, df_manual], ignore_index=True)
+
 st.sidebar.header("標準賃率（標賃）")
 be_rate = st.sidebar.number_input("損益分岐賃率（円/分）", value=float(params.get("break_even_rate") or 0.0), step=0.001, format="%.6f")
 req_rate = st.sidebar.number_input("必要賃率（円/分）", value=float(params.get("required_rate") or 0.0), step=0.001, format="%.6f")
@@ -336,12 +380,12 @@ df_table = df_display.rename(columns=rename_map)
 df_table = df_table[[c for c in ordered_cols if c in df_table.columns]]
 
 def _style_row(row):
-    color = "#d1ffd6" if row.get("必要賃率達成") else "#ffd1d1"
-    return [f"background-color: {color}"] * len(row)
+    color = "#2e4f2e" if row.get("必要賃率達成") else "#4f2e2e"
+    return [f"background-color: {color}; color: white"] * len(row)
 
 def _highlight_negative(v):
     try:
-        return "color: red" if v < 0 else ""
+        return "color: #ff6b6b" if v < 0 else ""
     except:
         return ""
 

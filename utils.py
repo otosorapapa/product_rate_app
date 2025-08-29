@@ -226,6 +226,12 @@ def parse_products(xls: pd.ExcelFile, sheet_name: str = "R6.12") -> Tuple[pd.Dat
 # --------------- Core compute ---------------
 def compute_results(df_products: pd.DataFrame, break_even_rate: float, required_rate: float) -> pd.DataFrame:
     df = df_products.copy()
+    # Excel からの読み込みや二重の計算処理により、同名の列が
+    # 複数存在することがある。pandas の演算は重複した列ラベルを
+    # 含むデータフレームに対して reindex を行う際に ValueError を
+    # 投げるため、ここで重複列を除去しておく。
+    if not df.columns.is_unique:
+        df = df.loc[:, ~df.columns.duplicated(keep="last")]
     be_rate = 0.0 if break_even_rate is None else float(break_even_rate)
     req_rate = 0.0 if required_rate is None else float(required_rate)
     # recompute core metrics from raw columns

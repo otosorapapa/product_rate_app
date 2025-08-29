@@ -39,7 +39,8 @@ rate_lines = []
 for name, p in scenarios.items():
     sp, _ = sanitize_params(p)
     _, rr = compute_rates(sp)
-    rate_lines.append({"name": name, "y": rr["required_rate"]})
+    rate_lines.append({"scenario": name, "type": "必要賃率", "y": rr["required_rate"]})
+    rate_lines.append({"scenario": name, "type": "損益分岐賃率", "y": rr["break_even_rate"]})
 
 with st.expander("表示設定", expanded=False):
     topn = int(st.slider("未達SKUの上位件数（テーブル/パレート）", min_value=5, max_value=50, value=20, step=1))
@@ -54,7 +55,7 @@ if "df_products_sim" in st.session_state:
 # Global filters
 fcol1, fcol2, fcol3 = st.columns([1,1,2])
 classes = df["rate_class"].dropna().unique().tolist()
-selected_classes = fcol1.multiselect("達成分類で絞り込み", classes, default=classes)
+selected_classes = fcol1.multiselect("商品分類で絞り込み", classes, default=classes)
 search = fcol2.text_input("製品名 検索（部分一致）", "")
 mpu_min, mpu_max = fcol3.slider("分/個（製造リードタイム）の範囲", float(np.nan_to_num(df["minutes_per_unit"].min(), nan=0.0)), float(np.nan_to_num(df["minutes_per_unit"].max(), nan=10.0)), value=(0.0, float(np.nan_to_num(df["minutes_per_unit"].max(), nan=10.0))))
 
@@ -73,17 +74,23 @@ col3.metric("必要賃率達成SKU比率", f"{ach_rate:,.1f}%")
 avg_vapm = df_view["va_per_min"].replace([np.inf,-np.inf], np.nan).dropna().mean() if "va_per_min" in df_view else 0.0
 col4.metric("平均 付加価値/分", f"{avg_vapm:,.1f}")
 
-tabs = st.tabs(["全体分布（散布図）", "達成状況（棒/円）", "未達SKU（パレート）", "SKUテーブル"])
+tabs = st.tabs(["全体分布（散布図）", "分類状況（棒/円）", "未達SKU（パレート）", "SKUテーブル"])
 
 with tabs[0]:
-    st.caption("横軸=分/個（製造リードタイム）, 縦軸=付加価値/分。色線=各シナリオの必要賃率。")
+    st.caption("横軸=分/個（製造リードタイム）, 縦軸=付加価値/分。基準線=各シナリオの損益分岐賃率および必要賃率。")
     base = alt.Chart(df_view).mark_circle().encode(
         x=alt.X("minutes_per_unit:Q", title="分/個"),
         y=alt.Y("va_per_min:Q", title="付加価値/分"),
         tooltip=["product_name:N","minutes_per_unit:Q","va_per_min:Q","rate_class:N"]
     ).properties(height=420)
     color = base.encode(color=alt.Color("rate_class:N", legend=alt.Legend(title="分類")))
-    rule_chart = alt.Chart(pd.DataFrame(rate_lines)).mark_rule().encode(y="y:Q", color="name:N")
+    rate_df = pd.DataFrame(rate_lines)
+    rule_chart = alt.Chart(rate_df).mark_rule().encode(
+        y="y:Q",
+        color=alt.Color("type:N", legend=alt.Legend(title="基準線")),
+        detail="scenario:N",
+        strokeDash="type:N",
+    )
     st.altair_chart(color + rule_chart, use_container_width=True)
 
 with tabs[1]:
@@ -91,7 +98,7 @@ with tabs[1]:
     class_counts = df_view["rate_class"].value_counts().reset_index()
     class_counts.columns = ["rate_class", "count"]
     bar = alt.Chart(class_counts).mark_bar().encode(
-        x=alt.X("rate_class:N", title="達成分類"),
+        x=alt.X("rate_class:N", title="商品分類"),
         y=alt.Y("count:Q", title="件数"),
         tooltip=["rate_class","count"]
     ).properties(height=380)
@@ -138,12 +145,12 @@ with tabs[3]:
         "price_gap_vs_required": "必要販売単価差額",
         "rate_gap_vs_required": "必要賃率差",
         "meets_required_rate": "必要賃率達成",
-        "rate_class": "達成分類",
+        "rate_class": "商品分類",
     }
     ordered_cols = [
         "製品番号","製品名","実際売単価","必要販売単価","必要販売単価差額","材料原価","粗利/個",
         "分/個","日産数","日産合計(分)","付加価値(日産)","付加価値/分",
-        "損益分岐付加価値単価","必要付加価値単価","必要賃率差","必要賃率達成","達成分類",
+        "損益分岐付加価値単価","必要付加価値単価","必要賃率差","必要賃率達成","商品分類",
     ]
     df_table = df_view.rename(columns=rename_map)
     df_table = df_table[[c for c in ordered_cols if c in df_table.columns]]

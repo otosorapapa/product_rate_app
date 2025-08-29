@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from pages.standard_rate import (
+from standard_rate_core import (
     DEFAULT_PARAMS,
     sanitize_params,
     compute_rates,

@@ -11,26 +11,33 @@ from utils import compute_results
 from standard_rate_core import DEFAULT_PARAMS, sanitize_params, compute_rates
 
 st.title("② ダッシュボード")
+scenario_name = st.session_state.get("current_scenario", "Base")
+st.caption(f"適用中シナリオ: {scenario_name}")
 
 if "df_products_raw" not in st.session_state or st.session_state["df_products_raw"] is None or len(st.session_state["df_products_raw"]) == 0:
     st.info("先に『① データ入力 & 取り込み』でデータを準備してください。")
     st.stop()
 
 df_products_raw = st.session_state["df_products_raw"]
-base_params = st.session_state.get("sr_params", DEFAULT_PARAMS)
+scenarios = st.session_state.get("scenarios", {scenario_name: st.session_state.get("sr_params", DEFAULT_PARAMS)})
+st.session_state["scenarios"] = scenarios
+base_params = scenarios.get(scenario_name, st.session_state.get("sr_params", DEFAULT_PARAMS))
 base_params, warn_list = sanitize_params(base_params)
+scenarios[scenario_name] = base_params
 _, base_results = compute_rates(base_params)
 be_rate = base_results["break_even_rate"]
 req_rate = base_results["required_rate"]
 for w in warn_list:
     st.warning(w)
 
-# Controls
-with st.expander("基準賃率の調整（What-if）", expanded=False):
-    colA, colB, colC = st.columns([1,1,1.5])
-    be_rate = colA.number_input("損益分岐賃率（円/分）", value=float(be_rate), step=0.001, format="%.6f")
-    req_rate = colB.number_input("必要賃率（円/分）", value=float(req_rate), step=0.001, format="%.6f")
-    topn = int(colC.slider("未達SKUの上位件数（テーブル/パレート）", min_value=5, max_value=50, value=20, step=1))
+rate_lines = []
+for name, p in scenarios.items():
+    sp, _ = sanitize_params(p)
+    _, rr = compute_rates(sp)
+    rate_lines.append({"name": name, "y": rr["required_rate"]})
+
+with st.expander("表示設定", expanded=False):
+    topn = int(st.slider("未達SKUの上位件数（テーブル/パレート）", min_value=5, max_value=50, value=20, step=1))
 
 df = compute_results(df_products_raw, be_rate, req_rate)
 
@@ -59,15 +66,15 @@ col4.metric("平均 付加価値/分", f"{avg_vapm:,.1f}")
 tabs = st.tabs(["全体分布（散布図）", "達成状況（棒/円）", "未達SKU（パレート）", "SKUテーブル"])
 
 with tabs[0]:
-    st.caption("横軸=分/個（製造リードタイム）, 縦軸=付加価値/分。赤線=必要賃率。")
+    st.caption("横軸=分/個（製造リードタイム）, 縦軸=付加価値/分。色線=各シナリオの必要賃率。")
     base = alt.Chart(df_view).mark_circle().encode(
         x=alt.X("minutes_per_unit:Q", title="分/個"),
         y=alt.Y("va_per_min:Q", title="付加価値/分"),
         tooltip=["product_name:N","minutes_per_unit:Q","va_per_min:Q","rate_class:N"]
     ).properties(height=420)
-    rule = alt.Chart(pd.DataFrame({"y":[req_rate]})).mark_rule(color="red").encode(y="y:Q")
     color = base.encode(color=alt.Color("rate_class:N", legend=alt.Legend(title="分類")))
-    st.altair_chart(color + rule, use_container_width=True)
+    rule_chart = alt.Chart(pd.DataFrame(rate_lines)).mark_rule().encode(y="y:Q", color="name:N")
+    st.altair_chart(color + rule_chart, use_container_width=True)
 
 with tabs[1]:
     c1, c2 = st.columns([1.2,1])

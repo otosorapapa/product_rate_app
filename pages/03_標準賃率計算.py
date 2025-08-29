@@ -17,11 +17,32 @@ from standard_rate_core import (
 )
 
 st.title("③ 標準賃率 計算/感度分析")
+scenarios = st.session_state.setdefault("scenarios", {"Base": st.session_state.get("sr_params", DEFAULT_PARAMS)})
+current = st.session_state.setdefault("current_scenario", "Base")
+st.caption(f"適用中シナリオ: {current}")
 
-# load current or defaults
-if "sr_params" not in st.session_state:
-    st.session_state["sr_params"] = DEFAULT_PARAMS.copy()
-params = st.session_state["sr_params"].copy()
+params = scenarios.get(current, st.session_state.get("sr_params", DEFAULT_PARAMS)).copy()
+
+st.sidebar.header("シナリオ")
+names = list(scenarios.keys())
+selected = st.sidebar.selectbox("シナリオ選択", names, index=names.index(current))
+if selected != current:
+    st.session_state["current_scenario"] = selected
+    st.session_state["sr_params"] = scenarios[selected].copy()
+    st.experimental_rerun()
+
+new_name = st.sidebar.text_input("新規シナリオ名", "")
+if st.sidebar.button("追加") and new_name:
+    scenarios[new_name] = params.copy()
+    st.session_state["current_scenario"] = new_name
+    st.session_state["sr_params"] = params.copy()
+    st.experimental_rerun()
+
+if current != "Base" and st.sidebar.button("削除"):
+    del scenarios[current]
+    st.session_state["current_scenario"] = "Base"
+    st.session_state["sr_params"] = scenarios["Base"].copy()
+    st.experimental_rerun()
 
 st.sidebar.header("入力")
 placeholders = {}
@@ -63,6 +84,8 @@ params, warn_list = sanitize_params(params)
 for w in warn_list:
     st.sidebar.warning(w)
 st.session_state["sr_params"] = params
+scenarios[current] = params
+st.session_state["scenarios"] = scenarios
 
 nodes, results = compute_rates(params)
 reverse_index = build_reverse_index(nodes)
@@ -113,7 +136,7 @@ st.pyplot(fig)
 df_csv = pd.DataFrame(list(nodes.values()))
 df_csv["depends_on"] = df_csv["depends_on"].apply(lambda x: ",".join(x))
 csv = df_csv.to_csv(index=False, encoding="utf-8-sig")
-st.download_button("CSVエクスポート", data=csv, file_name="standard_rate.csv", mime="text/csv")
+st.download_button("CSVエクスポート", data=csv, file_name=f"standard_rate__{current}.csv", mime="text/csv")
 
 pdf_bytes = generate_pdf(nodes, fig)
-st.download_button("PDFエクスポート", data=pdf_bytes, file_name="standard_rate_summary.pdf", mime="application/pdf")
+st.download_button("PDFエクスポート", data=pdf_bytes, file_name=f"standard_rate_summary__{current}.pdf", mime="application/pdf")

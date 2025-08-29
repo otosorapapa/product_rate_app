@@ -32,6 +32,15 @@ for w in (warn1 + warn2):
 
 st.session_state["sr_params"] = sr_params
 st.session_state["df_products_raw"] = df_products
+if "scenarios" not in st.session_state:
+    st.session_state["scenarios"] = {"Base": sr_params.copy()}
+    st.session_state["current_scenario"] = "Base"
+else:
+    st.session_state["scenarios"]["Base"] = sr_params.copy()
+if "current_scenario" not in st.session_state:
+    st.session_state["current_scenario"] = "Base"
+
+st.caption(f"適用中シナリオ: {st.session_state['current_scenario']}")
 
 c1, c2, c3 = st.columns(3)
 c1.metric("固定費計 (円/年)", f"{calc_params.get('fixed_total', 0):,.0f}")
